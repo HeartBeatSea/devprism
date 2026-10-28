@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>效能棱镜 · Java 研发效能分析</title>
+<style>
+  :root {
+    --bg: #f7f5f0;
+    --card: #ffffff;
+    --line: #e4e0d7;
+    --line-soft: #efebe3;
+    --ink: #24272b;
+    --ink-soft: #4a4f57;
+    --muted: #6f7580;
+    --accent: #2f6f66;
+    --accent-weak: #e7f0ee;
+    --warn: #9c6b34;
+    --err: #b04a38;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; color: var(--ink); overflow: hidden;
+    font: 14.5px/1.65 "Segoe UI", -apple-system, "Microsoft YaHei", sans-serif;
+    background:
+      radial-gradient(900px 520px at 8% -10%, #fffdf7 0%, rgba(255,253,247,0) 62%),
+      linear-gradient(180deg, #faf8f3 0%, #e9ecee 100%);
+  }
+  [hidden] { display: none !important; }
+  button { font: inherit; }
+
+  /* ---------- 三栏骨架（可拖动分隔条） ---------- */
+  .app {
+    display: grid;
+    grid-template-columns: var(--side-w, 288px) 7px minmax(0, 1fr) 7px var(--viz-w, 372px);
+    height: 100vh;
+  }
+  .resizer { cursor: col-resize; position: relative; background: transparent; touch-action: none; }
+  .resizer::after {
+    content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px;
+    background: var(--line); transition: background .15s, width .15s, left .15s;
+  }
+  .resizer:hover::after, .resizer.dragging::after { background: var(--accent); left: 2px; width: 3px; }
+  @media (max-width: 1180px) {
+    .app { grid-template-columns: var(--side-w, 260px) 7px minmax(0, 1fr); }
+    .viz, #resizer-right { display: none; }
+  }
+  @media (max-width: 860px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar, #resizer-left, #resizer-right { display: none; }
+  }
+
+  /* ---------- 左侧栏 ---------- */
+  .sidebar {
+    display: flex; flex-direction: column; min-height: 0;
+    background: #fbfaf7;
+  }
+  .side-head { padding: 18px 18px 12px; }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 650; font-size: 15px; }
+  .brand .mark {
+    width: 22px; height: 22px; border-radius: 6px; position: relative; flex: none;
+    background: linear-gradient(140deg, var(--accent), #4b8a7d);
+  }
+  .brand .mark::after {
+    content: ""; position: absolute; inset: 6px 5px;
+    border-left: 2px solid rgba(255,255,255,.9);
+    border-top: 2px solid rgba(255,255,255,.45);
+    transform: skewX(-16deg);
+  }
+  .brand small { display: block; color: var(--muted); font-weight: 400; font-size: 11.5px; }
+
+  .side-actions { padding: 0 14px 12px; }
+  .new-btn {
+    width: 100%; display: flex; align-items: center; justify-content: center; gap: 7px;
+    border: 1px solid var(--line); background: #fff; color: var(--ink);
+    border-radius: 10px; padding: 9px 12px; cursor: pointer; font-weight: 600;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  .new-btn:hover { border-color: #b9d3ce; color: var(--accent); background: var(--accent-weak); }
+
+  .new-form { margin: 0 14px 12px; padding: 12px; background: #fff; border: 1px solid var(--line); border-radius: 11px; }
+  .new-form label { display: block; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; }
+  .new-form input {
+    width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px;
+    font: inherit; font-size: 13px; background: #fcfbf8; outline: none; color: var(--ink);
+  }
+  .new-form input:focus { border-color: #a9c7c2; box-shadow: 0 0 0 3px rgba(47,111,102,.09); }
+  .new-row { display: grid; grid-template-columns: 78px 1fr; gap: 8px; margin-top: 8px; }
+  .new-form .go {
+    width: 100%; margin-top: 10px; border: 0; border-radius: 8px; padding: 8px;
+    background: var(--accent); color: #fff; font-weight: 600; cursor: pointer;
+  }
+  .new-form .go:disabled { opacity: .5; cursor: not-allowed; }
+  .new-form .err { color: var(--err); font-size: 12px; margin: 6px 0 0; }
+
+  .side-label {
+    padding: 8px 18px 6px; font-size: 11px; color: var(--muted);
+    letter-spacing: .5px; text-transform: uppercase;
+  }
+  .side-list { flex: 1; overflow-y: auto; padding: 0 10px 16px; min-height: 0; }
+  .hist-group { margin-bottom: 5px; }
+  .hist-repo {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    padding: 6px 8px; border-radius: 7px; font-size: 12.5px; color: var(--ink-soft);
+  }
+  .hist-repo:hover { background: #f2efe7; }
+  .hist-repo .caret { font-size: 9px; color: var(--muted); transition: transform .15s; }
+  .hist-repo.open .caret { transform: rotate(90deg); }
+  .hist-repo .count { margin-left: auto; color: var(--muted); font-size: 11px; }
+  .hist-sessions { display: none; margin-left: 12px; border-left: 1px solid var(--line-soft); }
+  .hist-sessions.open { display: block; }
+  .hist-session {
+    display: block; width: 100%; text-align: left; border: 0; background: none;
+    cursor: pointer; font: inherit; font-size: 12px; color: var(--muted);
+    padding: 5px 9px; border-radius: 6px; line-height: 1.4;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .hist-session:hover { background: #f2efe7; color: var(--ink); }
+  .hist-session.active { background: var(--accent-weak); color: var(--accent); }
+  .empty-hint { color: var(--muted); font-size: 12px; padding: 10px 8px; }
+
+  .side-foot { padding: 10px 14px; border-top: 1px solid var(--line); display: flex; gap: 6px; flex-wrap: wrap; }
+  .pill {
+    font-size: 11px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); background: #fff;
+  }
+  .pill.ok { color: var(--accent); border-color: #cfe0dc; background: var(--accent-weak); }
+  .pill.bad { color: var(--err); border-color: #e8cfc8; background: #fbeeea; }
+
+  /* ---------- 中间对话 ---------- */
+  .chat { display: flex; flex-direction: column; min-height: 0; }
+  .chat-head {
+    display: flex; align-items: center; gap: 10px; padding: 13px 22px;
+    border-bottom: 1px solid var(--line); background: rgba(255,255,255,.72);
+    backdrop-filter: blur(8px);
+  }
+  .chat-title { font-weight: 620; font-size: 14px; }
+  .chat-sub { color: var(--muted); font-size: 12px; }
+  .chat-tools { margin-left: auto; display: flex; gap: 6px; }
+  .ghost {
+    border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
+    font-size: 12px; padding: 5px 11px; border-radius: 7px; cursor: pointer;
+  }
+  .ghost:hover:not(:disabled) { border-color: #b9d3ce; color: var(--accent); background: var(--accent-weak); }
+  .ghost:disabled { opacity: .45; cursor: not-allowed; }
+
+  .chat-body { flex: 1; overflow-y: auto; padding: 22px 22px 8px; min-height: 0; }
+  .welcome { max-width: 520px; margin: 9vh auto; text-align: center; color: var(--muted); }
+  .welcome h2 { font-size: 19px; color: var(--ink); margin: 0 0 8px; }
+  .welcome p { font-size: 13.5px; margin: 0 0 6px; }
+  .welcome .tips { margin-top: 18px; display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  .welcome .tips button {
+    border: 1px dashed var(--line); background: #fff; color: var(--muted);
+    font-size: 12px; padding: 5px 11px; border-radius: 999px; cursor: pointer;
+  }
+  .welcome .tips button:hover { color: var(--accent); border-color: #b9d3ce; background: var(--accent-weak); }
+
+  .msg { margin-bottom: 20px; display: flex; gap: 10px; }
+  .msg .who {
+    flex: none; width: 26px; height: 26px; border-radius: 8px; display: flex;
+    align-items: center; justify-content: center; font-size: 11px; font-weight: 700;
+  }
+  .msg.user .who { background: #ece8df; color: var(--muted); }
+  .msg.bot .who { background: var(--accent); color: #fff; }
+  .msg .content { flex: 1; min-width: 0; }
+  .msg.user .content {
+    background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 9px 13px; font-size: 13.5px;
+  }
+
+  .trace-box { border: 1px solid var(--line-soft); border-radius: 10px; background: #fbfaf7; margin-bottom: 10px; overflow: hidden; }
+  .trace-toggle {
+    width: 100%; display: flex; align-items: center; gap: 8px; cursor: pointer;
+    border: 0; background: none; padding: 8px 11px; font: inherit; font-size: 12px;
+    color: var(--muted); text-align: left;
+  }
+  .trace-toggle .dot { width: 6px; height: 6px; border-radius: 50%; background: #cfcabd; flex: none; }
+  .trace-toggle .dot.on { background: var(--accent); animation: breathe 1.4s infinite; }
+  @keyframes breathe { 50% { opacity: .25; } }
+  .trace-toggle .arrow { margin-left: auto; transition: transform .15s; font-size: 9px; }
+  .trace-box.open .trace-toggle .arrow { transform: rotate(90deg); }
+  .trace-list { display: none; padding: 0 11px 10px; max-height: 260px; overflow-y: auto; }
+  .trace-box.open .trace-list { display: block; }
+  .ev { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; }
+  .ev .tag { flex: none; color: var(--muted); min-width: 40px; font-size: 11px; }
+  .ev .txt { color: var(--ink-soft); word-break: break-word; }
+  .ev.tool .txt, .ev.obs .txt { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .ev.err .txt { color: var(--err); }
+
+  .md h1 { font-size: 18px; margin: 14px 0 8px; }
+  .md h2 { font-size: 15px; margin: 18px 0 7px; padding-bottom: 5px; border-bottom: 1px solid var(--line-soft); }
+  .md h3 { font-size: 14px; margin: 14px 0 5px; }
+  .md p { margin: 7px 0; }
+  .md ul, .md ol { margin: 7px 0; padding-left: 20px; }
+  .md li { margin: 3px 0; }
+  .md code { font-family: var(--mono); font-size: 12px; background: #f4f2ec; padding: 1px 5px; border-radius: 4px; }
+  .md pre { background: #f8f6f1; border: 1px solid var(--line-soft); padding: 11px; border-radius: 8px; overflow-x: auto; }
+  .md pre code { background: none; padding: 0; }
+  .md table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 12.5px; }
+  .md th, .md td { border: 1px solid var(--line-soft); padding: 6px 9px; text-align: left; }
+  .md th { background: #faf8f3; font-weight: 600; }
+  .md blockquote { margin: 9px 0; padding: 3px 12px; color: var(--ink-soft); border-left: 2px solid #b9d3ce; background: #fafcfb; }
+  .md a { color: var(--accent); }
+  .md hr { border: 0; border-top: 1px solid var(--line-soft); margin: 16px 0; }
+
+  .composer { padding: 10px 22px 16px; }
+  .composer-box {
+    display: flex; gap: 8px; align-items: flex-end;
+    background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 8px;
+  }
+  .composer-box:focus-within { border-color: #a9c7c2; box-shadow: 0 0 0 3px rgba(47,111,102,.08); }
+  .composer textarea {
+    flex: 1; border: 0; outline: none; resize: none; font: inherit; font-size: 13.5px;
+    background: transparent; min-height: 38px; max-height: 140px; padding: 6px; color: var(--ink);
+  }
+  .send {
+    flex: none; border: 0; border-radius: 9px; width: 34px; height: 34px;
+    background: var(--accent); color: #fff; font-size: 15px; cursor: pointer;
+  }
+  .send:disabled { opacity: .45; cursor: not-allowed; }
+  .composer-foot { display: flex; align-items: center; gap: 10px; margin-top: 6px; color: var(--muted); font-size: 11.5px; }
+  .conv-trigger {
+    border: 1px solid var(--line); background: #fff; color: var(--ink-soft);
+    border-radius: 999px; padding: 3px 10px; font-size: 11.5px; cursor: pointer;
+  }
+  .conv-trigger:hover { border-color: #b9d3ce; color: var(--accent); background: var(--accent-weak); }
+
+  /* ---------- 右侧可视化 ---------- */
+  .viz { background: #fbfaf7; overflow-y: auto; min-height: 0; }
+  .viz-head {
+    position: sticky; top: 0; z-index: 2; padding: 13px 16px;
+    background: rgba(251,250,247,.94); backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--line); font-size: 12.5px; font-weight: 600; color: var(--ink-soft);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .viz-head .meta { margin-left: auto; font-weight: 400; color: var(--muted); font-size: 11.5px; }
+  .viz-body { padding: 12px 14px 24px; display: grid; gap: 10px; }
+  .viz-empty { color: var(--muted); font-size: 12.5px; text-align: center; padding: 40px 10px; }
+
+  .kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .kpi { background: #fff; border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; }
+  .kpi .label { font-size: 11px; color: var(--muted); }
+  .kpi .value { font-size: 18px; font-weight: 650; letter-spacing: -.4px; margin: 2px 0 0; }
+  .kpi .note { font-size: 10.5px; color: var(--muted); margin-top: 1px; }
+  .kpi.warn .value { color: var(--warn); }
+  .kpi.bad .value { color: var(--err); }
+  .kpi.na .value { color: #a9aeb6; font-size: 15px; }
+
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; }
+  .card h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--ink-soft); display: flex; }
+  .card h3 .aside { margin-left: auto; font-weight: 400; color: var(--muted); font-size: 10.5px; }
+  .chart { position: relative; }
+  .chart-bars { display: flex; align-items: flex-end; gap: 2px; height: 84px; }
+  .bar {
+    flex: 1; min-width: 3px; background: #c3d8d3;
+    border-radius: 2px 2px 0 0; transition: background .12s;
+  }
+  .bar:hover { background: var(--accent); }
+  .bar.dim { background: #dbe7e4; }
+  .chart-axis { display: flex; gap: 2px; margin-top: 5px; }
+  .chart-axis span { flex: 1; text-align: center; font-size: 9px; color: var(--muted); }
+  .chart-tip {
+    position: fixed; z-index: 60; pointer-events: none;
+    background: #24272b; color: #fff; font-size: 11px; line-height: 1.5;
+    padding: 3px 8px; border-radius: 6px; white-space: nowrap;
+    opacity: 0; transition: opacity .1s; transform: translate(-50%, -135%);
+  }
+  .chart-tip.on { opacity: 1; }
+  .chart-max { font-size: 10.5px; color: var(--muted); margin-top: 4px; }
+
+  .java-row { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
+  .java-row:last-child { border-bottom: 0; }
+  .java-row span:first-child { color: var(--muted); }
+  .java-row span:last-child { font-family: var(--mono); font-size: 11.5px; }
+
+  table.mini { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  table.mini th, table.mini td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line-soft); }
+  table.mini th { color: var(--muted); font-weight: 500; font-size: 10.5px; }
+  table.mini tr:last-child td { border-bottom: 0; }
+
+  .risk { display: flex; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+  .risk:last-child { border-bottom: 0; }
+  .risk .lv { flex: none; font-size: 10px; padding: 0 6px; border-radius: 999px; height: fit-content; border: 1px solid var(--line); }
+  .risk .lv.high { color: var(--err); border-color: #e8cfc8; background: #fbeeea; }
+  .risk .lv.mid { color: var(--warn); border-color: #e6d6bd; background: #fbf5ea; }
+  .risk .lv.low { color: var(--muted); background: #f8f6f1; }
+  .risk .txt strong { display: block; font-size: 11.5px; }
+  .risk .txt span { font-size: 11px; color: var(--muted); }
+
+  .provenance { display: grid; gap: 4px; font-size: 11px; color: var(--ink-soft); }
+  .provenance .item { display: flex; gap: 6px; }
+  .provenance .item span { color: var(--muted); flex: none; min-width: 56px; }
+  .provenance code { font-family: var(--mono); font-size: 10.5px; word-break: break-all; }
+
+  /* ---------- 弹窗 ---------- */
+  .modal {
+    position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+    background: rgba(30,30,25,.35); backdrop-filter: blur(2px); padding: 20px;
+  }
+  .modal-box {
+    background: #fff; border-radius: 14px; padding: 22px 24px; width: min(600px, 100%);
+    max-height: 86vh; overflow-y: auto; box-shadow: 0 24px 60px -20px rgba(20,20,15,.4);
+  }
+  .modal-box h3 { margin: 0 0 6px; font-size: 15px; }
+  .modal-hint { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
+  .modal-box label { display: block; font-size: 11.5px; color: var(--muted); margin-bottom: 5px; }
+  .modal-box input[type=text], .modal-box textarea {
+    width: 100%; border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px;
+    font: inherit; font-size: 13px; background: #fcfbf8; outline: none; color: var(--ink);
+  }
+  .modal-box textarea { resize: vertical; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .primary {
+    border: 0; border-radius: 9px; padding: 8px 18px; background: var(--accent);
+    color: #fff; font-weight: 600; cursor: pointer;
+  }
+  .primary:disabled { opacity: .5; cursor: not-allowed; }
+  .file-drop {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    margin-top: 4px; padding: 12px; cursor: pointer;
+    border: 1.5px dashed #dcd7cb; border-radius: 12px; background: #fcfbf8;
+    color: var(--muted); font-size: 12px; transition: all .15s;
+  }
+  .file-drop strong { color: var(--ink-soft); }
+  .file-drop:hover, .file-drop.drag { border-color: #a9c7c2; background: var(--accent-weak); color: var(--accent); }
+  .file-drop:hover strong, .file-drop.drag strong { color: var(--accent); }
+  .file-picked { margin: 6px 0 0; font-size: 11.5px; color: var(--accent); }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .conv-list { margin-top: 14px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+  .conv-item { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+  .conv-item:last-child { border-bottom: 0; }
+  .conv-item .name { flex: 1; }
+  .conv-item .meta { color: var(--muted); font-size: 11px; }
+  .conv-item .del { border: 0; background: none; color: var(--err); font-size: 11.5px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="side-head">
+      <div class="brand">
+        <span class="mark"></span>
+        <div>效能棱镜<small>Java 研发效能分析</small></div>
+      </div>
+    </div>
+
+    <div class="side-actions">
+      <button class="new-btn" id="new-session">＋ 新会话</button>
+    </div>
+
+    <div class="new-form" id="new-form" hidden>
+      <label for="repo">GitHub 仓库</label>
+      <input id="repo" placeholder="owner/name，例如 google/gson" value="google/gson" autocomplete="off" spellcheck="false" />
+      <div class="new-row">
+        <div>
+          <label for="days">窗口</label>
+          <input id="days" type="number" value="180" min="7" max="3650" />
+        </div>
+        <div>
+          <label for="conventions">对照规范</label>
+          <input id="conventions" value="team" placeholder="team / repo / custom:名字" />
+        </div>
+      </div>
+      <button class="go" id="start">开始分析</button>
+      <p class="err" id="new-error" hidden></p>
+    </div>
+
+    <div class="side-label">历史</div>
+    <div class="side-list" id="history-list">
+      <p class="empty-hint">还没有记录</p>
+    </div>
+
+    <div class="side-foot">
+      <span class="pill" id="pill-gh">GitHub —</span>
+      <span class="pill" id="pill-llm">模型 —</span>
+    </div>
+  </aside>
+
+  <div class="resizer" id="resizer-left" title="拖动调整宽度，双击复位"></div>
+
+  <main class="chat">
+    <div class="chat-head">
+      <div>
+        <div class="chat-title" id="chat-title">未选择仓库</div>
+        <div class="chat-sub" id="chat-sub">点左侧「新会话」开始</div>
+      </div>
+      <div class="chat-tools">
+        <button class="ghost" id="copy-md" disabled>复制</button>
+        <button class="ghost" id="download-md" disabled>下载 .md</button>
+      </div>
+    </div>
+
+    <div class="chat-body" id="messages">
+      <div class="welcome">
+        <h2>选一个仓库，问它点什么</h2>
+        <p>从提交与 PR 元数据看协作状态，从目录树看 Java 工程结构。</p>
+        <p>结论里的每个数字都能追溯到工具返回。</p>
+        <div class="tips">
+          <button data-q="这个仓库最大的风险是什么？">最大风险是什么</button>
+          <button data-q="Java 工程结构怎么样？测试比例健康吗？">Java 工程结构</button>
+          <button data-q="提交规范执行得怎么样？该怎么改？">提交规范情况</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="composer-box">
+        <textarea id="question" rows="1" placeholder="问点什么…（回车发送，Shift+回车换行）"></textarea>
+        <button class="send" id="send" title="发送">↑</button>
+      </div>
+      <div class="composer-foot">
+        <button class="conv-trigger" id="manage-conv">导入规范</button>
+        <span id="foot-hint">未开始会话</span>
+      </div>
+    </div>
+  </main>
+
+  <div class="resizer" id="resizer-right" title="拖动调整宽度，双击复位"></div>
+
+  <aside class="viz">
+    <div class="viz-head">指标概览<span class="meta" id="viz-meta"></span></div>
+    <div class="viz-body" id="viz">
+      <div class="viz-empty">分析完成后，这里显示指标卡、分布图和 Java 结构</div>
+    </div>
+  </aside>
+</div>
+
+<div class="modal" id="conv-modal" hidden>
+  <div class="modal-box">
+    <h3>导入团队规范</h3>
+    <p class="modal-hint">支持 .md / .txt。导入后在「对照规范」里填 <code>custom:名字</code> 即可使用。</p>
+    <label for="conv-name">规范名称</label>
+    <input type="text" id="conv-name" placeholder="例如：甲乙团队研发规范" />
+    <label style="margin-top:12px">选择文件</label>
+    <label class="file-drop" id="conv-drop" for="conv-file">
+      <strong>选择文件</strong><span>或拖进来 · .md / .txt</span>
+    </label>
+    <input type="file" id="conv-file" accept=".md,.markdown,.txt" class="visually-hidden" />
+    <p class="file-picked" id="conv-file-name" hidden></p>
+    <label style="margin-top:12px" for="conv-text">或直接粘贴</label>
+    <textarea id="conv-text" rows="7" placeholder="粘贴规范正文…"></textarea>
+    <div class="modal-actions">
+      <button class="ghost" id="conv-cancel">取消</button>
+      <button class="primary" id="conv-save">保存</button>
+    </div>
+    <div class="conv-list" id="conv-list"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { repo: null, owner: "", name: "", days: 180, conventions: "team", running: false, markdown: "" };
+
+fetch("/api/meta").then(r => r.json()).then(meta => {
+  const gh = $("pill-gh"), llm = $("pill-llm");
+  gh.textContent = meta.github ? "GitHub 已配置" : "GitHub 未配置";
+  gh.className = "pill " + (meta.github ? "ok" : "bad");
+  llm.textContent = meta.llm ? meta.model : "模型未配置";
+  llm.className = "pill " + (meta.llm ? "ok" : "bad");
+  if (!meta.llm) $("foot-hint").textContent = "未配置 LLM_API_KEY，无法分析";
+}).catch(() => {});
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/* ---------------- 三栏宽度可调 ---------------- */
+const DEFAULTS = { side: 288, viz: 372 };
+const limits = { side: [210, 440], viz: [280, 620] };
+const layout = {
+  side: Number(localStorage.getItem("devprism.sideW")) || DEFAULTS.side,
+  viz: Number(localStorage.getItem("devprism.vizW")) || DEFAULTS.viz,
+};
+
+function applyLayout() {
+  document.documentElement.style.setProperty("--side-w", layout.side + "px");
+  document.documentElement.style.setProperty("--viz-w", layout.viz + "px");
+}
+applyLayout();
+
+function saveLayout(key) {
+  localStorage.setItem("devprism." + (key === "side" ? "sideW" : "vizW"), String(layout[key]));
+}
+
+function bindResizer(el, key, invert) {
+  if (!el) return;
+  const [min, max] = limits[key];
+  el.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    el.classList.add("dragging");
+    const startX = e.clientX, startW = layout[key];
+    const onMove = (ev) => {
+      const dx = (ev.clientX - startX) * (invert ? -1 : 1);
+      layout[key] = Math.round(Math.min(max, Math.max(min, startW + dx)));
+      applyLayout();
+    };
+    const onUp = () => {
+      el.classList.remove("dragging");
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      saveLayout(key);
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+  });
+  el.addEventListener("dblclick", () => {
+    layout[key] = DEFAULTS[key];
+    applyLayout();
+    saveLayout(key);
+  });
+}
+
+bindResizer($("resizer-left"), "side", false);
+bindResizer($("resizer-right"), "viz", true);
+
+/* ---------------- 新会话 ---------------- */
+$("new-session").addEventListener("click", () => {
+  $("new-form").hidden = !$("new-form").hidden;
+  if (!$("new-form").hidden) $("repo").focus();
+});
+
+$("start").addEventListener("click", () => {
+  const repo = $("repo").value.trim();
+  const days = parseInt($("days").value, 10) || 180;
+  const conventions = $("conventions").value.trim() || "team";
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+    $("new-error").hidden = false;
+    $("new-error").textContent = "格式应为 owner/name，例如 google/gson";
+    return;
+  }
+  $("new-error").hidden = true;
+  beginSession(repo, days, conventions);
+});
+
+function beginSession(repo, days, conventions) {
+  const [owner, name] = repo.split("/");
+  Object.assign(state, { repo, owner, name, days, conventions, markdown: "" });
+  $("chat-title").textContent = repo;
+  $("chat-sub").textContent = `最近 ${days} 天 · 规范 ${conventions}`;
+  $("foot-hint").textContent = `已选 ${repo}`;
+  $("copy-md").disabled = true;
+  $("download-md").disabled = true;
+  $("messages").innerHTML = "";
+  $("viz").innerHTML = '<div class="viz-empty">正在分析…</div>';
+  $("viz-meta").textContent = "";
+  $("new-form").hidden = true;
+  askAgent("请分析这个仓库当前的研发效能，指出最需要注意的问题。");
+}
+
+/* ---------------- 对话渲染 ---------------- */
+function scrollBottom() {
+  const box = $("messages");
+  box.scrollTop = box.scrollHeight;
+}
+
+function addUser(text) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg user";
+  wrap.innerHTML = `<div class="who">你</div><div class="content">${esc(text)}</div>`;
+  $("messages").appendChild(wrap);
+  scrollBottom();
+}
+
+function addBotShell() {
+  const wrap = document.createElement("div");
+  wrap.className = "msg bot";
+  wrap.innerHTML = `
+    <div class="who">镜</div>
+    <div class="content">
+      <div class="trace-box open">
+        <button class="trace-toggle"><span class="dot on"></span><span class="status">分析中…</span><span class="arrow">▶</span></button>
+        <div class="trace-list"></div>
+      </div>
+      <div class="md answer"></div>
+    </div>`;
+  $("messages").appendChild(wrap);
+  wrap.querySelector(".trace-toggle").addEventListener("click", () => {
+    wrap.querySelector(".trace-box").classList.toggle("open");
+  });
+  scrollBottom();
+  return wrap;
+}
+
+function traceLine(box, kind, tag, text) {
+  const list = box.querySelector(".trace-list");
+  const el = document.createElement("div");
+  el.className = "ev " + kind;
+  el.innerHTML = `<span class="tag">${esc(tag)}</span><span class="txt">${esc(text)}</span>`;
+  list.appendChild(el);
+  list.scrollTop = list.scrollHeight;
+  scrollBottom();
+}
+
+/* ---------------- 提问 ---------------- */
+const pending = { box: null, startedAt: 0, timer: null };
+
+function askAgent(question) {
+  if (state.running || !state.repo) return;
+  const q = (question || $("question").value).trim();
+  if (!q) return;
+
+  state.running = true;
+  $("send").disabled = true;
+  $("question").value = "";
+  addUser(q);
+
+  const box = addBotShell();
+  pending.box = box;
+  pending.startedAt = Date.now();
+  pending.timer = setInterval(() => {
+    const s = ((Date.now() - pending.startedAt) / 1000).toFixed(1);
+    const status = box.querySelector(".status");
+    if (status) status.textContent = `分析中 · ${s}s`;
+  }, 200);
+
+  const params = new URLSearchParams({
+    repo: state.repo,
+    question: q,
+    days: String(state.days),
+    conventions: state.conventions,
+  });
+  const es = new EventSource("/api/ask?" + params.toString());
+
+  es.onmessage = (msg) => {
+    let ev; try { ev = JSON.parse(msg.data); } catch { return; }
+    switch (ev.type) {
+      case "start": traceLine(box, "note", "开始", `分析 ${ev.repo}，窗口 ${ev.days} 天`); break;
+      case "note": traceLine(box, "note", "提示", ev.message); break;
+      case "thought": traceLine(box, "thought", "思考", ev.content); break;
+      case "tool_call": {
+        const args = typeof ev.arguments === "string" ? ev.arguments : JSON.stringify(ev.arguments);
+        traceLine(box, "tool", "调用", `${ev.tool} ${args || ""}`);
+        break;
+      }
+      case "observation":
+        traceLine(box, ev.ok ? "obs" : "err", ev.ok ? "返回" : "失败", (ev.content || "").slice(0, 300));
+        break;
+      case "citation_warning":
+        traceLine(box, "err", "引用", "未在知识库中找到：" + (ev.invalid || []).join("、"));
+        break;
+      case "answer":
+        box.querySelector(".answer").innerHTML = ev.html || "";
+        state.markdown = ev.markdown || "";
+        $("copy-md").disabled = !state.markdown;
+        $("download-md").disabled = !state.markdown;
+        traceLine(box, "note", "完成", `工具调用 ${ev.tool_calls || 0} 次`);
+        break;
+      case "metrics":
+        try { renderViz(ev); } catch (err) { console.error(err); }
+        break;
+      case "error":
+        traceLine(box, "err", "错误", ev.message);
+        box.querySelector(".answer").innerHTML = '<p style="color:#b04a38">本次分析失败，原因见上方轨迹。</p>';
+        break;
+      case "end": es.close(); finish(null); break;
+    }
+  };
+  es.onerror = () => { es.close(); finish("连接中断"); };
+}
+
+function finish(errorText) {
+  state.running = false;
+  $("send").disabled = false;
+  clearInterval(pending.timer);
+  const box = pending.box;
+  if (box) {
+    const dot = box.querySelector(".dot");
+    if (dot) dot.classList.remove("on");
+    const status = box.querySelector(".status");
+    if (status) {
+      const secs = ((Date.now() - pending.startedAt) / 1000).toFixed(1);
+      status.textContent = errorText ? `中断 · ${secs}s` : `完成 · ${secs}s`;
+    }
+    if (errorText) traceLine(box, "err", "中断", errorText);
+  }
+  $("foot-hint").textContent = `已选 ${state.repo || "—"}`;
+  loadHistory();
+}
+
+$("send").addEventListener("click", () => askAgent());
+$("question").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askAgent(); }
+});
+document.querySelectorAll(".welcome .tips button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (!state.repo) {
+      $("new-form").hidden = false;
+      $("repo").focus();
+      return;
+    }
+    askAgent(btn.dataset.q);
+  });
+});
+
+/* ---------------- 右侧可视化 ---------------- */
+const fmtPct = (v) => (v === null || v === undefined) ? null : (v * 100).toFixed(v * 100 < 10 ? 1 : 0) + "%";
+const fmtNum = (v, d = 1) => (v === null || v === undefined) ? null : Number(v).toFixed(d);
+const dash = (v, fb) => (v === null || v === undefined || v === "") ? fb : v;
+
+/* 用 HTML 柱子而不是 SVG：SVG 会被 preserveAspectRatio 横向拉伸，
+   柱子变形、文字也糊；而且原生 <title> 要悬停一秒才出，基本等于没有。 */
+function chartHTML(values, labels, tickEvery, tipFn) {
+  const max = Math.max(1, ...values);
+  const bars = values.map((v, i) => {
+    const h = Math.max((v / max) * 100, v > 0 ? 3 : 1.4);
+    const tip = tipFn ? tipFn(i, v) : `${labels[i]}：${v}`;
+    return `<div class="bar" style="height:${h.toFixed(1)}%" data-tip="${esc(tip)}"></div>`;
+  }).join("");
+  const axis = values.map((_, i) =>
+    `<span>${i % tickEvery === 0 ? esc(labels[i]) : ""}</span>`).join("");
+  const peakIdx = values.indexOf(Math.max(...values));
+  const note = `<div class="chart-max">峰值 ${esc(labels[peakIdx])} · ${values[peakIdx]} 次</div>`;
+  return `<div class="chart"><div class="chart-bars">${bars}</div><div class="chart-axis">${axis}</div>${note}</div>`;
+}
+
+/* 悬停提示：跟随鼠标，立刻出现 */
+const chartTip = document.createElement("div");
+chartTip.className = "chart-tip";
+document.body.appendChild(chartTip);
+
+document.addEventListener("mouseover", (e) => {
+  const bar = e.target.closest(".bar");
+  if (!bar) return;
+  chartTip.textContent = bar.dataset.tip || "";
+  const r = bar.getBoundingClientRect();
+  chartTip.style.left = (r.left + r.width / 2) + "px";
+  chartTip.style.top = r.top + "px";
+  chartTip.classList.add("on");
+});
+document.addEventListener("mouseout", (e) => {
+  if (e.target.closest(".bar")) chartTip.classList.remove("on");
+});
+window.addEventListener("scroll", () => chartTip.classList.remove("on"), true);
+
+function renderViz(data) {
+  const s = data.summary || {}, src = data.source || {};
+  const c = s.commits || {}, p = s.pulls || {}, b = s.bus_factor || {},
+        conv = s.convention || {}, rev = s.reverts || {}, j = s.java || {};
+  $("viz-meta").textContent = `${c.total ?? "—"} 次提交`;
+
+  const out = [];
+  const kpis = [];
+  const addKpi = (label, value, note, tone) =>
+    kpis.push(`<div class="kpi${tone ? " " + tone : ""}"><div class="label">${label}</div><div class="value">${value}</div><div class="note">${note || ""}</div></div>`);
+
+  addKpi("窗口内提交", c.total ?? "—", c.weekly_average ? `周均 ${c.weekly_average}` : "无数据");
+  addKpi("提交规范率", dash(fmtPct(conv.ratio), "无数据"), `样本 ${conv.considered ?? 0} 条`, conv.considered && conv.ratio < 0.5 ? "warn" : "");
+  addKpi("PR 中位周期", p.median_cycle_hours == null ? "无数据" : `${fmtNum(p.median_cycle_hours)}h`, p.p90_cycle_hours == null ? "无合并 PR" : `P90 ${fmtNum(p.p90_cycle_hours)}h`, p.median_cycle_hours == null ? "na" : "");
+  addKpi("评审缺口", dash(fmtPct(p.unreviewed_merge_ratio), "无数据"), `合并 ${p.merged ?? 0} 个`, (p.unreviewed_merge_ratio || 0) > 0.5 ? "bad" : "");
+  addKpi("Bus factor", b.bus_factor || "无数据", `最高 ${dash(fmtPct(b.top_author_share), "—")}`, b.bus_factor === 1 ? "warn" : "");
+  addKpi("回退提交", dash(fmtPct(rev.ratio), "无数据"), `${rev.count ?? 0} 条`, (rev.ratio || 0) > 0.05 ? "warn" : "");
+  out.push(`<div class="kpi-grid">${kpis.join("")}</div>`);
+
+  const hours = Array.from({ length: 24 }, (_, i) => (c.by_hour ? (c.by_hour[String(i)] || 0) : 0));
+  out.push(`<div class="card"><h3>24 小时提交分布<span class="aside">UTC</span></h3>${chartHTML(
+    hours,
+    Array.from({ length: 24 }, (_, i) => i),
+    4,
+    (i, v) => `${i} 点（UTC）：${v} 次`
+  )}</div>`);
+
+  const wk = Object.keys(c.by_weekday || {});
+  if (wk.length) {
+    out.push(`<div class="card"><h3>星期分布<span class="aside">${esc(c.busiest_weekday || "无数据")}</span></h3>${chartHTML(
+      wk.map(k => c.by_weekday[k]), wk, 1, (i, v) => `${wk[i]}：${v} 次`
+    )}</div>`);
+  }
+
+  if (j.is_java) {
+    const rows = [
+      ["构建工具", j.build_tool || "未识别"],
+      ["Java 版本", j.java_version || "—"],
+      ["主代码类", j.main_java ?? 0],
+      ["测试类", j.test_java ?? 0],
+      ["测试/主代码", j.test_ratio ?? "—"],
+      ["子模块", j.module_count ?? 0],
+    ];
+    if (j.dependencies != null) rows.push([j.module_count ? "根 POM 依赖" : "依赖数", j.dependencies]);
+    out.push(`<div class="card"><h3>Java 工程结构</h3>${rows.map(([k, v]) =>
+      `<div class="java-row"><span>${k}</span><span>${esc(v)}</span></div>`).join("")}</div>`);
+  }
+
+  const authors = b.authors || [];
+  if (authors.length) {
+    const total = authors.reduce((a, x) => a + x.commits, 0);
+    out.push(`<div class="card"><h3>贡献者<span class="aside">${b.author_count ?? 0} 人</span></h3>
+      <table class="mini"><tbody>${authors.slice(0, 5).map(a =>
+        `<tr><td>${esc(a.login)}</td><td>${a.commits}</td><td style="color:#6f7580">${total ? Math.round(a.commits / total * 100) : 0}%</td></tr>`).join("")}</tbody></table></div>`);
+  }
+
+  const risks = s.risks || [];
+  out.push(`<div class="card"><h3>风险提示</h3>${risks.length ? risks.map(r => {
+    const lv = r.level === "高" ? "high" : r.level === "中" ? "mid" : "low";
+    return `<div class="risk"><span class="lv ${lv}">${esc(r.level)}</span><div class="txt"><strong>${esc(r.title)}</strong><span>${esc(r.detail)}</span></div></div>`;
+  }).join("") : '<p class="empty-hint" style="padding:6px 0">未发现显著风险</p>'}</div>`);
+
+  const complete = c.covers_window !== false && p.covers_window !== false;
+  const prov = [
+    ["窗口", `${(s.since || "").slice(0, 10)} → ${(s.until || "").slice(0, 10)}`],
+    ["样本", complete ? "完整覆盖" : "观察样本"],
+    ["请求", `${src.requests ?? "—"} 次 / 缓存 ${src.cache_hits ?? "—"} 次`],
+    ["回退", src.stale ? `${src.stale} 次用旧缓存` : "无"],
+  ];
+  out.push(`<div class="card"><h3>数据口径</h3><div class="provenance">${prov.map(([k, v]) =>
+    `<div class="item"><span>${k}</span><code>${esc(v)}</code></div>`).join("")}</div></div>`);
+
+  $("viz").innerHTML = out.join("");
+}
+
+/* ---------------- 历史 ---------------- */
+async function loadHistory() {
+  try {
+    const data = await (await fetch("/api/history")).json();
+    const groups = data.groups || [];
+    const box = $("history-list");
+    if (!groups.length) { box.innerHTML = '<p class="empty-hint">还没有记录</p>'; return; }
+    box.innerHTML = groups.map(g => `
+      <div class="hist-group">
+        <div class="hist-repo"><span class="caret">▶</span><span>${esc(g.repo)}</span><span class="count">${g.count}</span></div>
+        <div class="hist-sessions">
+          ${g.sessions.map(s => `<button class="hist-session" data-id="${s.id}" title="${esc(s.title)}">${esc(s.title)}</button>`).join("")}
+        </div>
+      </div>`).join("");
+
+    box.querySelectorAll(".hist-repo").forEach(el => el.addEventListener("click", () => {
+      el.classList.toggle("open");
+      el.nextElementSibling.classList.toggle("open");
+    }));
+    box.querySelectorAll(".hist-session").forEach(el => el.addEventListener("click", () => {
+      box.querySelectorAll(".hist-session").forEach(x => x.classList.remove("active"));
+      el.classList.add("active");
+      openSession(el.dataset.id);
+    }));
+  } catch { /* 忽略 */ }
+}
+
+async function openSession(id) {
+  try {
+    const rec = await (await fetch("/api/history/" + id)).json();
+    state.repo = rec.repo; state.days = rec.days;
+    state.conventions = rec.conventions || "team";
+    state.markdown = rec.markdown || "";
+    $("chat-title").textContent = rec.repo;
+    $("chat-sub").textContent = `历史会话 · ${rec.days} 天 · ${new Date(rec.created_at * 1000).toLocaleString()}`;
+    $("copy-md").disabled = !state.markdown;
+    $("download-md").disabled = !state.markdown;
+    $("foot-hint").textContent = `已载入历史：${rec.repo}`;
+    $("messages").innerHTML = "";
+    addUser(rec.title || "历史会话");
+    const box = addBotShell();
+    box.querySelector(".trace-box").classList.remove("open");
+    box.querySelector(".dot").classList.remove("on");
+    box.querySelector(".answer").innerHTML = rec.html || "";
+
+    // 把当时保存下来的轨迹也放回去，方便对照结论
+    const trace = (rec.payload && rec.payload.trace) || [];
+    const labels = {
+      thought: ["思考", "thought"], tool_call: ["调用", "tool"],
+      observation: ["返回", "obs"], note: ["提示", "note"],
+      start: ["开始", "note"], error: ["错误", "err"],
+    };
+    trace.forEach((t) => {
+      const [tag, kind] = labels[t.type] || ["事件", "note"];
+      const text = t.type === "tool_call"
+        ? `${t.tool || ""} ${JSON.stringify(t.arguments || {})}`
+        : (t.content || t.message || "");
+      if (text) traceLine(box, kind, tag, String(text).slice(0, 300));
+    });
+    box.querySelector(".status").textContent = trace.length
+      ? `历史记录 · ${trace.length} 条轨迹`
+      : "历史记录";
+
+    if (rec.payload && rec.payload.summary) {
+      renderViz({ summary: rec.payload.summary, source: rec.payload.source || {} });
+    } else {
+      $("viz").innerHTML = '<div class="viz-empty">这条历史没有保存指标快照<br>（早期记录可能只存了结论）</div>';
+      $("viz-meta").textContent = "";
+    }
+    scrollBottom();
+  } catch { /* 忽略 */ }
+}
+
+/* ---------------- 导出 ---------------- */
+$("copy-md").addEventListener("click", async () => {
+  if (!state.markdown) return;
+  try {
+    await navigator.clipboard.writeText(state.markdown);
+    $("copy-md").textContent = "已复制";
+    setTimeout(() => { $("copy-md").textContent = "复制"; }, 1400);
+  } catch { $("copy-md").textContent = "复制失败"; }
+});
+
+$("download-md").addEventListener("click", () => {
+  if (!state.markdown) return;
+  const name = (state.repo || "report").replace(/[^\w.-]+/g, "-");
+  const blob = new Blob([state.markdown], { type: "text/markdown;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `report-${name}.md`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+/* ---------------- 规范管理 ---------------- */
+$("manage-conv").addEventListener("click", () => { $("conv-modal").hidden = false; loadConventions(); });
+$("conv-cancel").addEventListener("click", () => { $("conv-modal").hidden = true; });
+$("conv-modal").addEventListener("click", (e) => { if (e.target === $("conv-modal")) $("conv-modal").hidden = true; });
+
+function readConvFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    $("conv-text").value = String(reader.result || "");
+    if (!$("conv-name").value) $("conv-name").value = file.name.replace(/\.(md|markdown|txt)$/i, "");
+    const picked = $("conv-file-name");
+    picked.hidden = false;
+    picked.textContent = `已读取 ${file.name}（${file.size} 字节）`;
+  };
+  reader.readAsText(file, "utf-8");
+}
+
+$("conv-file").addEventListener("change", (e) => { const f = e.target.files[0]; if (f) readConvFile(f); });
+const drop = $("conv-drop");
+["dragenter", "dragover"].forEach(ev => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+drop.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) readConvFile(f); });
+
+async function loadConventions() {
+  try {
+    const data = await (await fetch("/api/conventions")).json();
+    const items = data.items || [];
+    $("conv-list").innerHTML = items.length
+      ? items.map(i => `<div class="conv-item"><span class="name">custom:${esc(i.slug)}</span><span class="meta">${i.chars} 字符</span><button class="del" data-slug="${esc(i.slug)}">删除</button></div>`).join("")
+      : '<p class="empty-hint" style="padding:8px 0">还没有导入过自定义规范</p>';
+    $("conv-list").querySelectorAll(".del").forEach(btn => btn.addEventListener("click", async () => {
+      await fetch("/api/conventions/" + encodeURIComponent(btn.dataset.slug), { method: "DELETE" });
+      loadConventions();
+    }));
+  } catch { /* 忽略 */ }
+}
+
+$("conv-save").addEventListener("click", async () => {
+  const name = $("conv-name").value.trim();
+  const content = $("conv-text").value;
+  if (!name || !content.trim()) {
+    $("conv-save").textContent = "名称和内容都要填";
+    setTimeout(() => { $("conv-save").textContent = "保存"; }, 1600);
+    return;
+  }
+  $("conv-save").disabled = true;
+  try {
+    const res = await fetch("/api/conventions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ name, content }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "保存失败");
+    $("conventions").value = "custom:" + data.slug;
+    $("conv-name").value = ""; $("conv-text").value = ""; $("conv-file").value = "";
+    $("conv-file-name").hidden = true;
+    await loadConventions();
+    $("conv-modal").hidden = true;
+  } catch (err) {
+    $("conv-save").textContent = err.message;
+    setTimeout(() => { $("conv-save").textContent = "保存"; }, 1600);
+  } finally {
+    $("conv-save").disabled = false;
+  }
+});
+
+loadHistory();
+</script>
+</body>
+</html>

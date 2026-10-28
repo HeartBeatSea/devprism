@@ -1,0 +1,23 @@
+[project]
+name = "devprism"
+version = "0.1.0"
+description = "效能棱镜 —— 研发效能分析 Agent"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+# 核心引擎零第三方依赖：clone 下来就能跑 analyze / ask / run
+dependencies = []
+
+[project.optional-dependencies]
+# 只有 Web 控制台需要
+web = ["fastapi>=0.104", "uvicorn>=0.24"]
+
+[project.scripts]
+devprism = "devprism.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["devprism"]

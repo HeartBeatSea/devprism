@@ -1,0 +1,8 @@
+# 统一换行符，避免 Windows 的 CRLF 污染仓库
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.sqlite3 binary

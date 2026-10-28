@@ -1,0 +1,34 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# ---- 本地数据与产物 ----
+# 注意：.gitignore 不支持行内注释，注释必须单独成行，否则整行会被当成模式
+.cache/
+*.sqlite3
+report-*.md
+report-*.json
+
+# 用户导入的团队规范属于本地数据，不随仓库分发
+knowledge/custom/
+
+# 归档区：暂存不参与构建的旧文件
+.archive/
+
+# ---- 工具生成的笔记，不属于项目本身 ----
+.workbuddy/
+
+# ---- 密钥（本项目最重要的一条）----
+.env
+.env.local
+.env.*.local
+
+# ---- 编辑器 ----
+.idea/
+.vscode/
+.DS_Store

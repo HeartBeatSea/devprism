@@ -1,0 +1,49 @@
+name: 周报生成
+description: 拉指标 → 查规范 → 起草 → 人工确认 → 存档
+
+steps:
+  - id: commits
+    type: tool
+    tool: commit_activity
+    args:
+      owner: "{{ input.owner }}"
+      name: "{{ input.name }}"
+
+  - id: health
+    type: tool
+    tool: pull_health
+    args:
+      owner: "{{ input.owner }}"
+      name: "{{ input.name }}"
+
+  - id: rules
+    type: tool
+    tool: search_knowledge
+    args:
+      query: "提交规范 评审要求"
+      top_k: 3
+
+  - id: draft
+    type: llm
+    prompt: |
+      你是研发效能分析师。根据下面三组数据写一份周报。
+
+      仓库：{{ input.owner }}/{{ input.name }}
+      提交数据：{{ steps.commits.output }}
+      协作数据：{{ steps.health.output }}
+      团队规范片段：{{ steps.rules.output }}
+
+      要求：
+      1. 先给结论，再列支撑数据，每个数字标注来源工具。
+      2. 引用规范必须写 [来源: 文件#章节]。
+      3. 最后给 3 条可执行的改进建议。
+      4. 被分析的仓库通常不是本团队项目，规范只能作为参照，不要断言它「不合规」。
+
+  - id: review
+    type: approval
+    message: 周报已生成，确认后存档
+
+  - id: save
+    type: write_file
+    path: "report-{{ input.owner }}-{{ input.name }}-weekly.md"
+    content: "{{ steps.draft.output }}"
