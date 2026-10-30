@@ -44,6 +44,7 @@ class ToolContext:
     max_pages: int = 6
     knowledge_root: Path | None = None
     knowledge_seed: KnowledgeBase | None = None
+    embedder: Any = None
 
     _repo: dict[str, Any] = field(default_factory=dict)
     _commits: dict[str, list] = field(default_factory=dict)
@@ -54,9 +55,14 @@ class ToolContext:
     @property
     def knowledge(self) -> KnowledgeBase:
         if self._knowledge is None:
-            self._knowledge = self.knowledge_seed or KnowledgeBase(
-                self.knowledge_root or (ROOT / "knowledge")
-            )
+            if self.knowledge_seed is not None:
+                self._knowledge = self.knowledge_seed
+            else:
+                self._knowledge = KnowledgeBase(
+                    self.knowledge_root or (ROOT / "knowledge"), embedder=self.embedder
+                )
+            if self.embedder is not None and self._knowledge.embedder is None:
+                self._knowledge.attach_embedder(self.embedder)
         return self._knowledge
 
     def repo_meta(self, owner: str, name: str) -> dict[str, Any]:

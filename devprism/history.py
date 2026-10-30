@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS history (
 CREATE INDEX IF NOT EXISTS idx_history_repo ON history(owner, name, created_at DESC);
 """
 
-MAX_RECORDS = 300
+MAX_RECORDS = 300       # 全库上限
+MAX_PER_REPO = 8        # 单个仓库最多留几条会话，避免一个仓库刷满侧栏
 
 
 @dataclass
@@ -86,6 +87,31 @@ class HistoryStore:
         question: str | None = None,
         conventions: str | None = None,
     ) -> str:
+        """写入一条记录。同一个仓库、同一类内容只保留一条，重复的只更新时间。
+
+        否则同一个问题问三次就会在侧栏堆三条，历史很快变成垃圾场。
+        """
+        existing = self._conn.execute(
+            "SELECT id FROM history WHERE owner = ? AND name = ? AND kind = ?"
+            " AND title = ? AND IFNULL(question, '') = ?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (owner, name, kind, title, question or ""),
+        ).fetchone()
+
+        payload_text = json.dumps(payload or {}, ensure_ascii=False)
+        now = time.time()
+
+        if existing:
+            record_id = existing[0]
+            self._conn.execute(
+                "UPDATE history SET created_at = ?, days = ?, conventions = ?,"
+                " markdown = ?, payload = ? WHERE id = ?",
+                (now, days, conventions, markdown, payload_text, record_id),
+            )
+            self._conn.commit()
+            self._trim(owner, name)
+            return record_id
+
         record_id = uuid.uuid4().hex[:12]
         self._conn.execute(
             "INSERT INTO history (id, owner, name, kind, title, question, days,"
@@ -93,21 +119,27 @@ class HistoryStore:
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record_id, owner, name, kind, title, question, days,
-                conventions, time.time(), markdown,
-                json.dumps(payload or {}, ensure_ascii=False),
+                conventions, now, markdown, payload_text,
             ),
         )
         self._conn.commit()
-        self._trim()
+        self._trim(owner, name)
         return record_id
 
-    def _trim(self) -> None:
-        """只保留最近 N 条，避免库无限增长。"""
+    def _trim(self, owner: str | None = None, name: str | None = None) -> None:
+        """全库只保留最近 N 条；单个仓库再单独收紧。"""
         self._conn.execute(
             "DELETE FROM history WHERE id NOT IN"
             " (SELECT id FROM history ORDER BY created_at DESC LIMIT ?)",
             (MAX_RECORDS,),
         )
+        if owner and name:
+            self._conn.execute(
+                "DELETE FROM history WHERE owner = ? AND name = ? AND id NOT IN"
+                " (SELECT id FROM history WHERE owner = ? AND name = ?"
+                "  ORDER BY created_at DESC LIMIT ?)",
+                (owner, name, owner, name, MAX_PER_REPO),
+            )
         self._conn.commit()
 
     def groups(self) -> list[dict[str, Any]]:

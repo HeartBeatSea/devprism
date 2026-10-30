@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 import sys
 import threading
@@ -19,7 +21,9 @@ from typing import Any, Callable
 
 from . import agent
 from .cache import HttpCache
+from .codegraph import build_graph
 from .config import ROOT, load_settings
+from .embeddings import make_embedder
 from .github import GitHubClient, GitHubError
 from .history import HistoryStore
 from .knowledge import (
@@ -31,6 +35,7 @@ from .knowledge import (
 )
 from .llm import LLMClient
 from .markdown_lite import render as render_markdown
+from .symbols import extract_symbols, summarize_symbols
 from .tools import ToolContext, build_registry
 
 try:  # 可选依赖
@@ -96,6 +101,7 @@ def run_analysis(
     owner, name = split_repo(repo)
     cache = HttpCache(settings.cache_path)
     trace: list[dict[str, Any]] = []
+    embedder: Any = None
     try:
         client = GitHubClient(settings.github_token, cache, settings.timeout, proxy=settings.proxy)
 
@@ -103,7 +109,8 @@ def run_analysis(
         if conventions != "team":
             emit({"type": "note", "message": f"规范来源：{label}"})
 
-        ctx = ToolContext(client, window_days=days, knowledge_seed=seed)
+        embedder = make_embedder(settings, settings.cache_path.parent / "vectors.sqlite3")
+        ctx = ToolContext(client, window_days=days, knowledge_seed=seed, embedder=embedder)
         registry = build_registry(ctx)
         llm = LLMClient(settings.llm_base_url, settings.llm_api_key, settings.llm_model, proxy=settings.proxy)
 
@@ -158,7 +165,172 @@ def run_analysis(
         finally:
             store.close()
     finally:
+        if embedder is not None and hasattr(embedder, "close"):
+            embedder.close()
         cache.close()
+
+
+MAX_SOURCE_BYTES = 40_000
+MAX_SOURCE_FILES = 3
+
+_EXPLAIN_PROMPT = """你在解释一个代码仓库里的一部分。只根据下面给出的源码回答，
+不要推测源码里没有出现的功能；信息不足就直接说「源码里看不出来」。
+
+仓库：{repo}
+路径：{path}
+类型：{kind}
+文件：{files}
+识别到的符号：{symbols}
+
+源码（每个文件最多 {limit} 字符）：
+{source}
+
+请用 Markdown 输出，控制在 200 字以内，结构固定为：
+**职责**：一句话说清它负责什么
+**关键结构**：列出主要的类/函数及各自作用
+**注意**：明显的约束、风险或看不懂的地方（没有就写「无」）
+"""
+
+
+def _read_text(
+    client: GitHubClient, owner: str, name: str, path: str
+) -> tuple[str | None, str | None]:
+    """读一个文件的正文，失败时把原因带回来。
+
+    之前直接用 client.file_text，它把网络错误吞成 None，前端只能显示
+    「没有可读源码」——用户根本不知道是断网、是 404、还是文件太大。
+    """
+    try:
+        payload = client.get(f"/repos/{owner}/{name}/contents/{path}")
+    except GitHubError as exc:
+        # contents API 不通时换 raw 域名再试一次：两者常常一个被拦一个能通
+        fallback = client.raw_text(owner, name, path, limit=MAX_SOURCE_BYTES)
+        if fallback:
+            return fallback, None
+        return None, f"读取失败：{exc}"
+    if not isinstance(payload, dict):
+        return None, "接口返回格式异常"
+    if payload.get("encoding") == "none" or not payload.get("content"):
+        fallback = client.raw_text(owner, name, path, limit=MAX_SOURCE_BYTES)
+        if fallback:
+            return fallback, None
+        size = payload.get("size") or 0
+        return None, f"GitHub 不返回正文（{size / 1024:.0f} KB，可能超过单文件上限）"
+    try:
+        return base64.b64decode(payload["content"]).decode("utf-8", "replace"), None
+    except (ValueError, TypeError) as exc:
+        return None, f"内容解码失败：{exc}"
+
+
+def _collect_sources(
+    client: GitHubClient, owner: str, name: str, blobs: dict[str, int], path: str
+) -> tuple[list[dict[str, Any]], dict[str, str], list[str]]:
+    """挑出要读的文件：文件节点就是它自己，目录节点取体积最大的几个源码文件。"""
+    if path in blobs:
+        candidates = [path]
+    else:
+        prefix = f"{path}/" if path else ""
+        candidates = [
+            item for item in blobs
+            if item.startswith(prefix) and item != path
+        ]
+        # 优先读源码文件，再读其它；同类里挑小的，省 token
+        candidates.sort(key=lambda item: (
+            0 if item.lower().endswith((".java", ".kt", ".py", ".js", ".ts", ".tsx", ".go", ".rs", ".rb")) else 1,
+            blobs.get(item, 0),
+        ))
+        candidates = candidates[:MAX_SOURCE_FILES]
+
+    files: list[dict[str, Any]] = []
+    texts: dict[str, str] = {}
+    problems: list[str] = []
+    for candidate in candidates:
+        size = blobs.get(candidate, 0)
+        files.append({"path": candidate, "bytes": size})
+        if size > MAX_SOURCE_BYTES:
+            problems.append(f"`{candidate}` 超过 {MAX_SOURCE_BYTES // 1000} KB，已跳过")
+            continue
+        text, error = _read_text(client, owner, name, candidate)
+        if text:
+            texts[candidate] = text[:MAX_SOURCE_BYTES]
+        elif error:
+            problems.append(f"`{candidate}` {error}")
+    return files, texts, problems
+
+
+def _explain_with_llm(
+    settings: Any,
+    cache: HttpCache,
+    repo: str,
+    path: str,
+    blobs: dict[str, int],
+    files: list[dict[str, Any]],
+    texts: dict[str, str],
+    symbols: list[dict[str, Any]],
+    problems: list[str] | None = None,
+) -> tuple[str, str]:
+    """返回 (markdown, 说明)。没配模型或调用失败时，退回纯结构描述。"""
+    problems = problems or []
+    kind = "文件" if path in blobs else ("目录" if path else "仓库根目录")
+    file_list = "、".join(item["path"].rsplit("/", 1)[-1] for item in files) or "无"
+
+    if not texts:
+        structure = "\n".join(
+            f"- `{item['path']}`（{item['bytes'] / 1024:.1f} KB）" for item in files
+        ) or "- 该目录下没有可直接读取的源码文件"
+        reasons = "\n".join(f"- {item}" for item in problems) or "- 未获取到文件正文"
+        markdown = (
+            "**职责**：读取源码失败，这里只能给出结构信息。\n\n"
+            f"**读取失败的原因**：\n{reasons}\n\n"
+            f"**包含的文件**：\n{structure}"
+        )
+        return markdown, problems[0] if problems else "没有可读源码"
+
+    if not settings.has_llm:
+        names = "、".join(f"`{item['path']}`" for item in texts)
+        markdown = (
+            f"**职责**：未配置大模型，这里只列出结构与符号。\n\n"
+            f"**读取的文件**：{names}\n\n**识别到的符号**：{summarize_symbols(symbols)}"
+        )
+        return markdown, "未配置 LLM_API_KEY，仅展示结构"
+
+    source = "\n\n".join(
+        f"### {file_path}\n```\n{text}\n```" for file_path, text in texts.items()
+    )
+    prompt = _EXPLAIN_PROMPT.format(
+        repo=repo, path=path or "/", kind=kind, files=file_list,
+        symbols=summarize_symbols(symbols), source=source[:24_000], limit=MAX_SOURCE_BYTES,
+    )
+
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+    key = f"explain:v1:{repo}:{path or '/'}:{digest}"
+    long_cache = HttpCache(settings.cache_path, ttl=30 * 24 * 3600)
+    try:
+        cached = long_cache.get(key)
+        if cached is not None:
+            return cached[0], "来自缓存"
+
+        llm = LLMClient(settings.llm_base_url, settings.llm_api_key, settings.llm_model,
+                        proxy=settings.proxy)
+        reply = llm.chat([
+            {"role": "system", "content": "你是一个严谨的代码解读助手。"},
+            {"role": "user", "content": prompt},
+        ])
+        content = (reply["choices"][0]["message"].get("content") or "").strip()
+        if not content:
+            raise RuntimeError("模型返回为空")
+        long_cache.put(key, content, None)
+        return content, "由模型生成"
+    except Exception as exc:  # noqa: BLE001 解释失败不该让整页崩掉
+        names = "、".join(f"`{item['path']}`" for item in texts)
+        markdown = (
+            f"**职责**：模型调用失败，先给出结构。\n\n"
+            f"**读取的文件**：{names}\n\n**识别到的符号**：{summarize_symbols(symbols)}\n\n"
+            f"> 失败原因：{exc}"
+        )
+        return markdown, f"模型调用失败：{exc}"
+    finally:
+        long_cache.close()
 
 
 def build_report_payload(repo: str, days: int) -> dict[str, Any]:
@@ -185,6 +357,114 @@ def build_app() -> Any:
         raise RuntimeError("Web 控制台需要 FastAPI 与 uvicorn")
 
     app = FastAPI(title="效能棱镜", description="研发效能分析 Agent", docs_url=None, redoc_url=None)
+
+    # ---------- 代码分析模式 ----------
+
+    @app.get("/api/graph")
+    def graph(
+        repo: str = Query(..., description="owner/name"),
+        focus: str = Query("code", description="code=只看核心代码，all=全部文件"),
+    ) -> Any:
+        """返回仓库结构图。只读目录树，不读源码，所以不额外消耗配额。"""
+        try:
+            owner, name = split_repo(repo)
+        except ValueError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=400)
+
+        settings = load_settings()
+        cache = HttpCache(settings.cache_path)
+        try:
+            client = GitHubClient(settings.github_token, cache, settings.timeout, proxy=settings.proxy)
+            meta_info = client.repo(owner, name)
+            tree = client.tree(owner, name, meta_info.get("default_branch") or "HEAD")
+            payload = build_graph(f"{owner}/{name}", tree, focus=focus)
+            payload["repo"] = f"{owner}/{name}"
+            payload["tree_truncated"] = bool(getattr(client, "tree_truncated", False))
+
+            # 记住这次代码分析，用户下次不用重新输入仓库。同一仓库同一视角只留一条。
+            store = HistoryStore(settings.cache_path.parent / "history.sqlite3")
+            try:
+                store.add(
+                    owner=owner, name=name, kind="code",
+                    title="核心代码" if focus == "code" else "全部文件",
+                    days=0, markdown="",
+                    payload={
+                        "focus": focus,
+                        "nodes": len(payload["nodes"]),
+                        "total_files": payload["total_files"],
+                    },
+                )
+            finally:
+                store.close()
+
+            return JSONResponse(payload)
+        except GitHubError as exc:
+            return JSONResponse({"detail": f"GitHub 请求失败：{exc}"}, status_code=502)
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"detail": f"{type(exc).__name__}: {exc}"}, status_code=500)
+        finally:
+            cache.close()
+
+    @app.get("/api/explain")
+    def explain(
+        repo: str = Query(..., description="owner/name"),
+        path: str = Query(..., description="仓库内的路径，空字符串表示根目录"),
+    ) -> Any:
+        """按需读取一小部分源码，交给模型概括结构与功能。
+
+        只在用户点开某个节点时调用，避免为了画图去读完整个仓库。
+        """
+        try:
+            owner, name = split_repo(repo)
+        except ValueError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=400)
+
+        settings = load_settings()
+        cache = HttpCache(settings.cache_path)
+        try:
+            client = GitHubClient(settings.github_token, cache, settings.timeout, proxy=settings.proxy)
+            meta_info = client.repo(owner, name)
+            tree = client.tree(owner, name, meta_info.get("default_branch") or "HEAD")
+            blobs = {
+                entry.get("path"): int(entry.get("size") or 0)
+                for entry in tree
+                if entry.get("type") == "blob"
+            }
+
+            files, texts, problems = _collect_sources(client, owner, name, blobs, path)
+            symbols: list[dict[str, Any]] = []
+            for file_path, text in texts.items():
+                symbols.extend(
+                    {**sym, "file": file_path}
+                    for sym in extract_symbols(file_path, text)
+                )
+                if len(symbols) >= 60:
+                    break
+
+            summary, note = _explain_with_llm(
+                settings, cache, f"{owner}/{name}", path, blobs, files, texts, symbols,
+                problems,
+            )
+            return JSONResponse({
+                "path": path or "/",
+                "kind": "file" if path in blobs else ("dir" if path else "root"),
+                "summary": summary,
+                "html": render_markdown(summary),
+                "symbols": symbols[:60],
+                "files": files,
+                "sources": [
+                    {"path": file_path, "text": text[:12000], "bytes": len(text)}
+                    for file_path, text in texts.items()
+                ],
+                "problems": problems,
+                "note": note,
+            })
+        except GitHubError as exc:
+            return JSONResponse({"detail": f"GitHub 请求失败：{exc}"}, status_code=502)
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"detail": f"{type(exc).__name__}: {exc}"}, status_code=500)
+        finally:
+            cache.close()
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> Any:

@@ -21,6 +21,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .embeddings import cosine
+
+# 混合检索里向量占的比重。BM25 对专有名词和代码标识符更稳，所以向量给 0.6。
+VECTOR_WEIGHT = 0.6
+
+# 单块硬上限。超过就把一整段按句号再切。
+MAX_CHUNK_CHARS = 480
+
+# 中文比英文信息密度高：400 多字已经能装下好几条互不相干的规则，
+# 所以超过这个长度且有多段时，按段落一块一块切，而不是合并成一大块。
+TARGET_CHUNK_CHARS = 220
+
+# 太短的段落并到下一段，避免索引里全是碎片。
+MIN_PARA_CHARS = 40
+
 _ASCII_WORD = re.compile(r"[a-zA-Z0-9_]+")
 _CJK_RUN = re.compile(r"[\u4e00-\u9fff]+")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+)$")
@@ -84,16 +99,111 @@ def split_markdown(path: Path, text: str) -> list[Chunk]:
         else:
             buffer.append(line)
     flush()
-    return chunks
+    return _split_long_chunks(chunks, path.stem)
+
+
+def _pack(text: str, limit: int) -> list[str]:
+    """把长文本按段落打包成不超过 limit 的若干块。单段超长时再按句号切。"""
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    units: list[str] = []
+    for paragraph in paragraphs:
+        if len(paragraph) <= limit:
+            units.append(paragraph)
+            continue
+        # 一整段都超长（常见于从 Word 粘出来、中间没有空行的情况）
+        sentences = [s for s in re.split(r"(?<=[。！？；.!?])", paragraph) if s.strip()]
+        buffer = ""
+        for sentence in sentences:
+            if buffer and len(buffer) + len(sentence) > limit:
+                units.append(buffer)
+                buffer = ""
+            buffer += sentence
+        if buffer.strip():
+            units.append(buffer)
+
+    pieces: list[str] = []
+    current = ""
+    for unit in units:
+        if current and len(current) + len(unit) > limit:
+            pieces.append(current)
+            current = ""
+        current = f"{current}\n\n{unit}".strip() if current else unit
+    if current.strip():
+        pieces.append(current)
+    return pieces
+
+
+def _chunk_text(text: str) -> list[str]:
+    """把一段正文切成若干块。
+
+    规则：先按空行分段，过短的段落并入相邻段；如果整段已经够短且只有一两个
+    段落，就保持原样。否则一段一块——中文规范里「一条规则一段」是最常见写法，
+    按段切出来的块才具备检索意义。
+    """
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    if not paragraphs:
+        return [text]
+
+    units: list[str] = []
+    buffer = ""
+    for paragraph in paragraphs:
+        buffer = f"{buffer}\n\n{paragraph}".strip() if buffer else paragraph
+        if len(buffer) >= MIN_PARA_CHARS:
+            units.append(buffer)
+            buffer = ""
+    if buffer:
+        units.append(buffer)
+
+    if len(units) <= 1 and len(text) <= TARGET_CHUNK_CHARS:
+        return [text]
+
+    pieces: list[str] = []
+    for unit in units:
+        pieces.extend(_pack(unit, MAX_CHUNK_CHARS))
+    return pieces
+
+
+def _piece_title(text: str, index: int) -> str:
+    """给没有标题的块起一个可读的名字，用于引用路径。"""
+    first = text.strip().splitlines()[0] if text.strip() else ""
+    first = re.sub(r"^[#>\-*+\d.、\s]+", "", first).strip()
+    first = first.split("。")[0].strip()
+    if not first:
+        return f"第 {index} 段"
+    return first[:24] + ("…" if len(first) > 24 else "")
+
+
+def _split_long_chunks(chunks: list[Chunk], stem: str) -> list[Chunk]:
+    """按标题切完还不够：用户导入的规范常常没有 Markdown 标题，
+    整篇会变成一块，检索就退化成了「要么全中要么全不中」。
+    """
+    result: list[Chunk] = []
+    for chunk in chunks:
+        pieces = _chunk_text(chunk.text)
+        if len(pieces) <= 1:
+            result.append(chunk)
+            continue
+        has_real_heading = chunk.heading not in ("", stem)
+        seen: set[str] = set()
+        for index, piece in enumerate(pieces, 1):
+            heading = f"{chunk.heading} · {index}" if has_real_heading else _piece_title(piece, index)
+            while heading in seen:  # 首句撞车时补序号，保证引用路径唯一
+                heading = f"{heading}({index})"
+            seen.add(heading)
+            result.append(Chunk(doc=chunk.doc, heading=heading, text=piece))
+    return result
 
 
 class KnowledgeBase:
-    def __init__(self, root: Path | None = None, top_k: int = 3) -> None:
+    def __init__(self, root: Path | None = None, top_k: int = 3, embedder: Any = None) -> None:
         self.root = root
         self.default_top_k = top_k
         self.chunks: list[Chunk] = []
         self._document_frequency: Counter = Counter()
         self._average_length = 0.0
+        self.embedder = embedder
+        self._vectors: list[list[float]] = []
+        self.vector_status = "pending" if embedder is not None else "off"
         if root is not None:
             self._load()
 
@@ -116,6 +226,11 @@ class KnowledgeBase:
         if not self.root or not self.root.is_dir():
             return
         for path in sorted(self.root.rglob("*.md")):
+            # knowledge/custom/ 下是用户导入的规范，只能通过 custom:名字 显式选用，
+            # 不能混进内置团队规范的索引里，否则不同团队的规范会互相污染。
+            relative = path.relative_to(self.root)
+            if "custom" in relative.parts[:-1]:
+                continue
             try:
                 text = path.read_text(encoding="utf-8")
             except OSError:
@@ -134,7 +249,7 @@ class KnowledgeBase:
         total_docs = len(self.chunks)
         k1, b = 1.5, 0.75
         average = self._average_length or 1.0
-        scored: list[tuple[float, Chunk]] = []
+        bm25: list[float] = []
 
         for chunk in self.chunks:
             score = 0.0
@@ -146,24 +261,72 @@ class KnowledgeBase:
                 idf = math.log(1 + (total_docs - df + 0.5) / (df + 0.5))
                 denominator = frequency + k1 * (1 - b + b * chunk.length / average)
                 score += idf * frequency * (k1 + 1) / denominator
-            if score > 0:
-                scored.append((score, chunk))
+            bm25.append(score)
 
-        scored.sort(key=lambda item: item[0], reverse=True)
+        # 有向量就混合检索：向量管同义改写，BM25 管专有名词。
+        # 向量这一步失败时保持纯 BM25，并把原因记在 vector_status 里。
+        vector_scores = self._query_vectors(query)
+        if vector_scores is None:
+            combined = [(score, i) for i, score in enumerate(bm25) if score > 0]
+        else:
+            peak = max(bm25) if bm25 else 0.0
+            combined = []
+            for i, score in enumerate(bm25):
+                bm25_norm = (score / peak) if peak > 0 else 0.0
+                cos = (vector_scores[i] + 1) / 2  # -1..1 映射到 0..1
+                mixed = VECTOR_WEIGHT * cos + (1 - VECTOR_WEIGHT) * bm25_norm
+                if mixed > 0:
+                    combined.append((mixed, i))
+
+        combined.sort(key=lambda item: item[0], reverse=True)
         return [
             {
-                "source": chunk.citation,
+                "source": self.chunks[i].citation,
                 "score": round(score, 3),
-                "text": chunk.text[:600],
+                "text": self.chunks[i].text[:600],
             }
-            for score, chunk in scored[:k]
+            for score, i in combined[:k]
         ]
+
+    def attach_embedder(self, embedder: Any) -> None:
+        """挂上向量后端。已建好的索引会在下次检索时补算向量。"""
+        self.embedder = embedder
+        self._vectors = []
+        self.vector_status = "off" if embedder is None else "pending"
+
+    def _ensure_vectors(self) -> bool:
+        if self.embedder is None or not self.chunks:
+            return False
+        if len(self._vectors) == len(self.chunks):
+            return self.vector_status == "ready"
+        try:
+            self._vectors = self.embedder.embed(
+                [f"{chunk.heading}\n{chunk.text}" for chunk in self.chunks]
+            )
+            self.vector_status = "ready"
+            return True
+        except Exception as exc:  # noqa: BLE001 向量化失败不该让整个检索失败
+            self._vectors = []
+            self.vector_status = f"failed: {exc}"
+            return False
+
+    def _query_vectors(self, query: str) -> list[float] | None:
+        """返回每个块的余弦相似度；不可用时返回 None，调用方退回 BM25。"""
+        if not self._ensure_vectors():
+            return None
+        try:
+            query_vector = self.embedder.embed([query])[0]
+        except Exception as exc:  # noqa: BLE001
+            self.vector_status = f"failed: {exc}"
+            return None
+        return [cosine(query_vector, vector) for vector in self._vectors]
 
     def stats(self) -> dict[str, Any]:
         return {
             "documents": len({chunk.doc for chunk in self.chunks}),
             "chunks": len(self.chunks),
             "vocabulary": len(self._document_frequency),
+            "vector": self.vector_status,
         }
 
 

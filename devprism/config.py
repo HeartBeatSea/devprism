@@ -30,6 +30,9 @@ class Settings:
     cache_path: Path
     timeout: float
     proxy: str | None = None
+    embed_base_url: str = ""
+    embed_api_key: str | None = None
+    embed_model: str = ""
 
     @property
     def has_llm(self) -> bool:
@@ -38,6 +41,11 @@ class Settings:
     @property
     def llm_enabled(self) -> bool:
         return self.llm_api_key is not None and self.llm_base_url != ""
+
+    @property
+    def embed_enabled(self) -> bool:
+        """只有显式配了 EMBED_MODEL 才启用向量检索，避免默认连不上就报错。"""
+        return bool(self.embed_model and self.embed_api_key and self.embed_base_url)
 
 
 def load_settings(env_file: Path | None = None) -> Settings:
@@ -52,12 +60,19 @@ def load_settings(env_file: Path | None = None) -> Settings:
         or os.environ.get("http_proxy")
         or None
     )
+    llm_base = os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    llm_key = os.environ.get("LLM_API_KEY") or None
     return Settings(
         github_token=os.environ.get("GITHUB_TOKEN") or None,
-        llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
-        llm_api_key=os.environ.get("LLM_API_KEY") or None,
+        llm_base_url=llm_base,
+        llm_api_key=llm_key,
         llm_model=os.environ.get("LLM_MODEL", "gpt-4o-mini"),
         cache_path=Path(cache),
         timeout=float(os.environ.get("DEVPRISM_TIMEOUT", "20")),
         proxy=proxy,
+        # 向量服务可以复用大模型的地址和 Key；但模型名必须显式给，
+        # 因为 DeepSeek 这类只有对话接口的服务没有 embeddings。
+        embed_base_url=(os.environ.get("EMBED_BASE_URL") or llm_base).rstrip("/"),
+        embed_api_key=os.environ.get("EMBED_API_KEY") or llm_key,
+        embed_model=(os.environ.get("EMBED_MODEL") or "").strip(),
     )

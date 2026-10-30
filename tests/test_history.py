@@ -7,7 +7,63 @@ import unittest
 from pathlib import Path
 
 from devprism import knowledge
-from devprism.history import HistoryStore
+from devprism.history import MAX_PER_REPO, HistoryStore
+
+
+class TestHistoryDedupe(unittest.TestCase):
+    """侧栏要收敛：同一个问题不该堆成好几条。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = HistoryStore(Path(self.tmp.name) / "history.sqlite3")
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_same_question_is_updated_not_duplicated(self):
+        first = self.store.add("o", "r", "agent", "问题 A", 180, "旧答案", question="问题 A")
+        second = self.store.add("o", "r", "agent", "问题 A", 180, "新答案", question="问题 A")
+
+        self.assertEqual(first, second, "同一问题应复用同一条记录")
+        groups = self.store.groups()
+        self.assertEqual(groups[0]["count"], 1)
+        self.assertEqual(self.store.get(first)["markdown"], "新答案", "内容要更新成最新的")
+
+    def test_different_questions_are_kept(self):
+        self.store.add("o", "r", "agent", "Q1", 180, "a", question="Q1")
+        self.store.add("o", "r", "agent", "Q2", 180, "b", question="Q2")
+
+        self.assertEqual(self.store.groups()[0]["count"], 2)
+
+    def test_per_repo_cap(self):
+        for i in range(MAX_PER_REPO + 6):
+            self.store.add("o", "r", "agent", f"Q{i}", 180, "x", question=f"Q{i}")
+
+        self.assertLessEqual(self.store.groups()[0]["count"], MAX_PER_REPO)
+
+    def test_cap_is_per_repo(self):
+        for i in range(MAX_PER_REPO + 4):
+            self.store.add("o", "r1", "agent", f"Q{i}", 180, "x", question=f"Q{i}")
+        for i in range(3):
+            self.store.add("o", "r2", "agent", f"Q{i}", 180, "y", question=f"Q{i}")
+
+        counts = {g["repo"]: g["count"] for g in self.store.groups()}
+        self.assertLessEqual(counts["o/r1"], MAX_PER_REPO)
+        self.assertEqual(counts["o/r2"], 3, "别的仓库不该被连带裁掉")
+
+    def test_code_records_live_alongside_agent_records(self):
+        self.store.add("o", "r", "agent", "Q", 180, "x", question="Q")
+        self.store.add("o", "r", "code", "核心代码", 0, "", payload={"focus": "code"})
+
+        kinds = {s["kind"] for s in self.store.groups()[0]["sessions"]}
+        self.assertEqual(kinds, {"agent", "code"})
+
+    def test_delete_single_record(self):
+        record_id = self.store.add("o", "r", "agent", "Q", 180, "x", question="Q")
+
+        self.assertTrue(self.store.delete(record_id))
+        self.assertEqual(self.store.groups(), [])
 
 
 class TestHistoryStore(unittest.TestCase):
@@ -59,8 +115,9 @@ class TestHistoryStore(unittest.TestCase):
         self.assertFalse(self.store.delete(record_id))
 
     def test_delete_repo_removes_all_sessions(self):
-        for _ in range(3):
-            self.store.add(owner="a", name="one", kind="report", title="t", days=30, markdown="")
+        # 用不同标题，避免被「同一问题只留一条」的规则合并掉
+        for i in range(3):
+            self.store.add(owner="a", name="one", kind="report", title=f"t{i}", days=30, markdown="")
         self.store.add(owner="b", name="two", kind="report", title="t", days=30, markdown="")
 
         removed = self.store.delete_repo("a", "one")

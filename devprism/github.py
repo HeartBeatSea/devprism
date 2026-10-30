@@ -81,6 +81,7 @@ class GitHubClient:
         self.requests_made = 0
         self.cache_hits = 0
         self.stale_hits = 0
+        self.tree_truncated = False
         self.remaining: int | None = None
         self.truncated: set[str] = set()
         # 缓存键必须带上身份指纹：否则换 token 之后仍会读到未认证时期的旧响应，
@@ -120,6 +121,12 @@ class GitHubClient:
             self.cache_hits += 1
             return cached[0]
 
+        # 网络失败时的兜底：即使超过 TTL 也要能拿到上次的数据，
+        # 否则断网就没法演示、没法复现，缓存等于白建。
+        fallback = cached
+        if fallback is None and use_cache and hasattr(self.cache, "peek"):
+            fallback = self.cache.peek(cache_key)
+
         etag = cached[1] if cached else None
         last_error: Exception | None = None
 
@@ -139,8 +146,8 @@ class GitHubClient:
             except http.client.IncompleteRead as exc:
                 # 大响应在弱网/代理下会被截断，退避后重试
                 last_error = exc
-                if self._fallback_to_cache(cached):
-                    return cached[0]  # type: ignore[index]
+                if self._fallback_to_cache(fallback):
+                    return fallback[0]  # type: ignore[index]
                 time.sleep(1)
                 continue
             except urllib.error.HTTPError as exc:
@@ -157,8 +164,8 @@ class GitHubClient:
                 # 弱网或中间代理下 TLS 握手会偶发失败。
                 # 有缓存就先用缓存，别因为一次握手失败让整次分析白跑。
                 last_error = exc
-                if self._fallback_to_cache(cached):
-                    return cached[0]  # type: ignore[index]
+                if self._fallback_to_cache(fallback):
+                    return fallback[0]  # type: ignore[index]
                 time.sleep(1)
                 continue
 
@@ -352,6 +359,8 @@ class GitHubClient:
         )
         if not isinstance(payload, dict):
             return []
+        # 超大仓库的递归树会被 GitHub 截断，这时区域统计只是下限，必须如实标注
+        self.tree_truncated = bool(payload.get("truncated"))
         return payload.get("tree") or []
 
     def commits(
@@ -387,3 +396,31 @@ class GitHubClient:
 
     # 刻意不实现 /stats/contributors：该接口返回全量周粒度数据，实测单仓库可达
     # 2 MB 以上，既浪费配额又易被代理截断。贡献者分布直接用 commits 列表计算。
+
+    def raw_text(
+        self, owner: str, name: str, path: str, limit: int = 200_000, attempts: int = 2
+    ) -> str | None:
+        """从 raw.githubusercontent.com 直接取文件正文。
+
+        contents API 和 raw 是**不同域名**，网络里经常一个通、一个不通；
+        而且 raw 不消耗 API 配额，读取文件时用它做兜底很划算。
+        """
+        url = (
+            "https://raw.githubusercontent.com/"
+            f"{owner}/{name}/HEAD/{urllib.parse.quote(path)}"
+        )
+        last_error: Exception | None = None
+        for _ in range(attempts):
+            request = urllib.request.Request(
+                url, headers={"User-Agent": "devprism/0.1"}
+            )
+            try:
+                with self._opener.open(request, timeout=self.timeout) as response:
+                    body = response.read(limit + 1)
+                return body[:limit].decode("utf-8", "replace")
+            except (urllib.error.URLError, http.client.IncompleteRead, OSError) as exc:
+                last_error = exc
+                time.sleep(0.8)
+        if last_error:
+            return None
+        return None

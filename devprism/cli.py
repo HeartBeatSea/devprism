@@ -11,6 +11,7 @@ from pathlib import Path
 from . import __version__, agent, metrics, report
 from .cache import HttpCache
 from .config import ROOT, load_settings
+from .embeddings import make_embedder
 from .github import GitHubClient, GitHubError, RateLimitError
 from .knowledge import load_conventions_from_repo
 from .llm import LLMClient, LLMError, mask_secret
@@ -175,11 +176,13 @@ def cmd_ask(args: argparse.Namespace) -> int:
             print(f"→ 已加载该仓库自身规范：{loaded_path}"
                   f"（{knowledge_seed.stats()['chunks']} 个片段）", file=sys.stderr)
 
+    embedder = make_embedder(settings, settings.cache_path.parent / "vectors.sqlite3")
     ctx = ToolContext(
         client,
         window_days=args.days,
         max_pages=args.max_pages,
         knowledge_seed=knowledge_seed,
+        embedder=embedder,
     )
     registry = build_registry(ctx)
     llm = LLMClient(settings.llm_base_url, settings.llm_api_key, settings.llm_model, proxy=settings.proxy)
@@ -244,7 +247,12 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     cache = HttpCache(settings.cache_path)
     client = GitHubClient(settings.github_token, cache, settings.timeout, proxy=settings.proxy)
-    ctx = ToolContext(client, window_days=args.days, max_pages=args.max_pages)
+    ctx = ToolContext(
+        client,
+        window_days=args.days,
+        max_pages=args.max_pages,
+        embedder=make_embedder(settings, settings.cache_path.parent / "vectors.sqlite3"),
+    )
     registry = build_registry(ctx)
     llm = LLMClient(settings.llm_base_url, settings.llm_api_key, settings.llm_model, proxy=settings.proxy)
     store = WorkflowStore(settings.cache_path.parent / "workflows.sqlite3")
@@ -325,6 +333,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"  LLM Base URL : {settings.llm_base_url}")
     print(f"  LLM Model    : {settings.llm_model}")
     print(f"  LLM API Key  : {mask_secret(settings.llm_api_key)}")
+    if settings.embed_enabled:
+        print(f"  向量检索     : 已启用 · {settings.embed_model}")
+        try:
+            probe_vec = make_embedder(settings).embed(["连通性测试"])[0]  # type: ignore[union-attr]
+            print(f"  向量连通性   : 正常（{len(probe_vec)} 维）")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  向量连通性   : 失败 —— {exc}（会自动退回 BM25）")
+    else:
+        print("  向量检索     : 未启用（直接走 BM25；配 EMBED_MODEL 可开启混合检索）")
 
     if not settings.has_llm:
         print("\n⚠ LLM_API_KEY 未配置：Agent 循环暂不可用（指标引擎不受影响，仍可生成报告）。")

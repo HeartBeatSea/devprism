@@ -63,6 +63,10 @@ class JavaStructure:
     ci_files: int = 0
     has_wrapper: bool = False
     lombok_used: bool = False
+    # 按「文件在工程里承担的角色」分区统计，用于右侧的可视化
+    areas: dict[str, dict[str, int]] = field(default_factory=dict)
+    modules_detail: list[dict[str, Any]] = field(default_factory=list)
+    tree_truncated: bool = False
 
     @property
     def is_java(self) -> bool:
@@ -89,7 +93,129 @@ class JavaStructure:
             "dependencies": self.dependencies,
             "ci_files": self.ci_files,
             "has_wrapper": self.has_wrapper,
+            "areas": self.areas,
+            "modules_detail": self.modules_detail[:12],
+            "tree_truncated": self.tree_truncated,
         }
+
+
+# ---------------------------------------------------------------- 区域划分
+
+AREA_ORDER = ("主代码", "测试", "资源", "构建配置", "CI", "文档", "脚本", "前端", "二进制", "其他")
+
+_BINARY_EXT = (
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".bmp",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".jar", ".zip", ".gz", ".tgz", ".pdf", ".class", ".so", ".dll", ".dylib", ".bin", ".exe",
+)
+_BUILD_FILES = (
+    "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
+    "gradle.properties", "gradlew", "gradlew.bat", "mvnw", "mvnw.cmd", "build.xml", "ivy.xml",
+)
+_DOC_FILES = ("license", "license.txt", "changelog.md", "contributing.md", "notice", "authors")
+
+# 承载功能的源码后缀。只认 Java 会让 Python / 前端项目在「核心代码」视图里直接空掉。
+_CODE_EXT = (
+    ".java", ".kt", ".scala", ".groovy",
+    ".py", ".js", ".jsx", ".ts", ".tsx",
+    ".go", ".rs", ".rb", ".php", ".cs",
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
+    ".m", ".mm", ".swift", ".dart", ".lua", ".pl", ".ex", ".exs", ".clj", ".vue",
+)
+_FRONTEND_EXT = (".html", ".htm", ".css", ".scss", ".sass", ".less")
+_TEST_DIRS = ("test", "tests", "__tests__", "spec", "specs", "testcases")
+_TEST_FILE = re.compile(
+    r"(^test_.*\.py$)|(_test\.py$)|(\.(test|spec)\.[jt]sx?$)|((test|tests|it)\.(java|kt)$)"
+)
+
+
+def classify_area(path: str) -> str:
+    """判断一个文件在工程里承担什么角色。
+
+    只看路径，不读源码——目录树一次请求就能拿到全部路径和大小。
+    """
+    lowered = path.lower()
+    name = lowered.rsplit("/", 1)[-1]
+    segments = lowered.split("/")[:-1]
+
+    if lowered.startswith(".github/workflows/") or name in ("jenkinsfile", ".gitlab-ci.yml"):
+        return "CI"
+    if name in _BUILD_FILES or lowered.endswith(".gradle.kts"):
+        return "构建配置"
+    if any(seg in _TEST_DIRS for seg in segments) or _TEST_FILE.search(name):
+        return "测试"
+    if lowered.endswith(_CODE_EXT):
+        return "主代码"
+    if lowered.endswith((".md", ".markdown", ".rst", ".adoc")) or name in _DOC_FILES:
+        return "文档"
+    if "/docs/" in f"/{lowered}" or lowered.startswith("docs/"):
+        return "文档"
+    if lowered.endswith((".sh", ".ps1", ".bat", ".cmd")) or name == "makefile":
+        return "脚本"
+    if lowered.endswith(_FRONTEND_EXT):
+        return "前端"
+    if lowered.endswith(_BINARY_EXT):
+        return "二进制"
+    if "/src/main/resources/" in f"/{lowered}" or lowered.endswith(
+        (".properties", ".yml", ".yaml", ".xml", ".json", ".toml", ".ini", ".cfg")
+    ):
+        return "资源"
+    return "其他"
+
+
+def _module_of(path: str, modules: list[str]) -> str:
+    """把文件归到哪个模块。有 pom/gradle 声明的模块就按模块前缀匹配。"""
+    for module in sorted(modules, key=len, reverse=True):
+        if path.startswith(f"{module}/"):
+            return module
+    if "/" not in path:
+        return "（根目录）"
+    first = path.split("/", 1)[0]
+    # src/build 这类是布局目录，不是模块
+    if first.lower() in ("src", "build", "target", "out", "bin", "test"):
+        return "（根目录）"
+    return first
+
+
+def summarize_areas(tree: list[dict], modules: list[str] | None = None) -> tuple[dict, list]:
+    """按区域和模块汇总文件数与字节数。只统计 blob，跳过目录节点。"""
+    modules = modules or []
+    areas: dict[str, dict[str, int]] = {}
+    by_module: dict[str, dict[str, int]] = {}
+
+    for entry in tree:
+        if entry.get("type") != "blob":
+            continue
+        path = entry.get("path") or ""
+        if not path:
+            continue
+        size = int(entry.get("size") or 0)
+        area = classify_area(path)
+
+        bucket = areas.setdefault(area, {"files": 0, "bytes": 0, "java_files": 0})
+        bucket["files"] += 1
+        bucket["bytes"] += size
+        if path.lower().endswith(".java"):
+            bucket["java_files"] += 1
+
+        module = _module_of(path, modules)
+        slot = by_module.setdefault(module, {"files": 0, "bytes": 0, "java_files": 0})
+        slot["files"] += 1
+        slot["bytes"] += size
+        if path.lower().endswith((".java", ".kt")):
+            slot["java_files"] += 1
+
+    ordered = {name: areas[name] for name in AREA_ORDER if name in areas}
+    for name in sorted(areas):
+        if name not in ordered:
+            ordered[name] = areas[name]
+
+    detail = [
+        {"name": name, "files": data["files"], "bytes": data["bytes"], "java_files": data["java_files"]}
+        for name, data in by_module.items()
+    ]
+    detail.sort(key=lambda item: item["bytes"], reverse=True)
+    return ordered, detail
 
 
 def analyze_tree(tree: list[dict], file_texts: dict[str, str] | None = None) -> JavaStructure:
@@ -103,10 +229,6 @@ def analyze_tree(tree: list[dict], file_texts: dict[str, str] | None = None) -> 
         lowered = path.lower()
         if lowered.endswith(".java"):
             structure.java_files += 1
-            if "/src/test/java/" in f"/{path}":
-                structure.test_java += 1
-            elif "/src/main/java/" in f"/{path}":
-                structure.main_java += 1
         elif lowered.endswith(".kt"):
             structure.kotlin_files += 1
 
@@ -146,6 +268,11 @@ def analyze_tree(tree: list[dict], file_texts: dict[str, str] | None = None) -> 
         if version:
             structure.java_version = version.group(1).replace("_", ".")
         structure.lombok_used = "lombok" in gradle.lower()
+
+    structure.areas, structure.modules_detail = summarize_areas(tree, structure.modules)
+    # 主/测数量直接取自区域统计，保证报告里的「类文件」和「区域构成」是同一套口径
+    structure.main_java = structure.areas.get("主代码", {}).get("java_files", 0)
+    structure.test_java = structure.areas.get("测试", {}).get("java_files", 0)
 
     return structure
 
@@ -217,6 +344,7 @@ def build_index(
             failed.append(path)
 
     structure = analyze_tree(tree, documents)
+    structure.tree_truncated = bool(getattr(client, "tree_truncated", False))
 
     knowledge = KnowledgeBase(None)
     for path, text in documents.items():

@@ -43,6 +43,23 @@ class HttpCache:
             return None
         return json.loads(payload), etag
 
+    def peek(self, url: str) -> tuple[Any, str | None] | None:
+        """无视 TTL 取出缓存，仅供网络失败时兜底。
+
+        没有这一步，超过 TTL 的缓存等于不存在——断网时连上次的数据都用不了，
+        演示和离线复现会直接瘫掉。
+        """
+        row = self._conn.execute(
+            "SELECT payload, etag FROM http_cache WHERE url = ?", (url,)
+        ).fetchone()
+        if row is None:
+            return None
+        payload, etag = row
+        try:
+            return json.loads(payload), etag
+        except ValueError:
+            return None
+
     def put(self, url: str, payload: Any, etag: str | None) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO http_cache (url, etag, payload, fetched_at)"

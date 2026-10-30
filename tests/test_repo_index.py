@@ -8,8 +8,10 @@ from devprism.repo_index import (
     JavaStructure,
     analyze_tree,
     build_index,
+    classify_area,
     java_risk_items,
     pick_key_files,
+    summarize_areas,
 )
 
 POM = """<project>
@@ -228,6 +230,133 @@ class TestBuildIndex(unittest.TestCase):
 
         self.assertIn("pom.xml", index.failed)
         self.assertIsNone(index.structure.dependencies)
+
+
+class TestAreaClassification(unittest.TestCase):
+    def test_known_roles(self):
+        cases = {
+            "src/main/java/a/B.java": "主代码",
+            "src/test/java/a/BTest.java": "测试",
+            "pom.xml": "构建配置",
+            "mvnw": "构建配置",
+            ".github/workflows/ci.yml": "CI",
+            "Jenkinsfile": "CI",
+            "README.md": "文档",
+            "docs/guide.md": "文档",
+            "scripts/build.sh": "脚本",
+            "web/index.html": "前端",
+            "site/logo.png": "二进制",
+            "src/main/resources/app.properties": "资源",
+            "data/whatever.dat": "其他",
+        }
+        for path, expected in cases.items():
+            with self.subTest(path=path):
+                self.assertEqual(classify_area(path), expected)
+
+    def test_test_dir_wins_over_extension(self):
+        # src/test 下的 java 必须先判成测试，不能算进主代码
+        self.assertEqual(classify_area("module/src/test/java/X.java"), "测试")
+
+    def test_non_java_languages_are_code(self):
+        """回归：只认 Java 会让 Python / 前端项目在核心视图里直接空掉。"""
+        cases = {
+            "devprism/agent.py": "主代码",
+            "scripts/check_secrets.py": "主代码",
+            "src/app.ts": "主代码",
+            "cmd/main.go": "主代码",
+            "web/index.html": "前端",
+            "assets/style.css": "前端",
+        }
+        for path, expected in cases.items():
+            with self.subTest(path=path):
+                self.assertEqual(classify_area(path), expected)
+
+    def test_python_tests_are_detected(self):
+        self.assertEqual(classify_area("tests/test_agent.py"), "测试")
+        self.assertEqual(classify_area("pkg/agent_test.py"), "测试")
+        self.assertEqual(classify_area("web/app.test.ts"), "测试")
+
+
+class TestSummarizeAreas(unittest.TestCase):
+    def _tree(self, items):
+        return [{"path": p, "type": "blob", "size": s} for p, s in items]
+
+    def test_counts_and_bytes(self):
+        tree = self._tree([
+            ("src/main/java/A.java", 100),
+            ("src/main/java/B.java", 50),
+            ("README.md", 30),
+        ])
+
+        areas, _ = summarize_areas(tree)
+
+        self.assertEqual(areas["主代码"]["files"], 2)
+        self.assertEqual(areas["主代码"]["bytes"], 150)
+        self.assertEqual(areas["主代码"]["java_files"], 2)
+        self.assertEqual(areas["文档"]["files"], 1)
+
+    def test_directories_are_ignored(self):
+        tree = [{"path": "src", "type": "tree", "size": 0}]
+
+        areas, modules = summarize_areas(tree)
+
+        self.assertEqual(areas, {})
+        self.assertEqual(modules, [])
+
+    def test_module_attribution(self):
+        tree = self._tree([
+            ("core/src/main/java/A.java", 10),
+            ("web/src/main/java/B.java", 20),
+            ("src/main/java/C.java", 5),
+        ])
+
+        _, modules = summarize_areas(tree, ["core", "web"])
+
+        by_name = {m["name"]: m for m in modules}
+        self.assertEqual(by_name["core"]["files"], 1)
+        self.assertEqual(by_name["web"]["files"], 1)
+        self.assertEqual(by_name["（根目录）"]["files"], 1, "src 是布局目录，不该算成模块")
+
+    def test_sorted_by_bytes(self):
+        tree = self._tree([("a/x.txt", 10), ("b/y.txt", 900)])
+
+        _, modules = summarize_areas(tree)
+
+        self.assertEqual(modules[0]["name"], "b")
+
+    def test_areas_follow_declared_order(self):
+        tree = self._tree([
+            ("README.md", 10),          # 文档
+            ("src/main/java/A.java", 5),  # 主代码
+        ])
+
+        areas, _ = summarize_areas(tree)
+
+        self.assertEqual(list(areas)[0], "主代码", "主代码应排在文档前面")
+
+
+class TestAreaInStructure(unittest.TestCase):
+    def test_analyze_tree_fills_areas(self):
+        tree = [
+            {"path": "pom.xml", "type": "blob", "size": 100},
+            {"path": "src/main/java/A.java", "type": "blob", "size": 200},
+            {"path": "README.md", "type": "blob", "size": 50},
+        ]
+
+        structure = analyze_tree(tree, {"pom.xml": POM})
+        as_dict = structure.to_dict()
+
+        self.assertIn("主代码", as_dict["areas"])
+        self.assertTrue(as_dict["modules_detail"])
+        self.assertFalse(as_dict["tree_truncated"])
+
+    def test_truncated_tree_is_disclosed(self):
+        class TruncatedClient(FakeClient):
+            tree_truncated = True
+
+        index = build_index(TruncatedClient(java_tree(2, 1), {"pom.xml": POM}), "o", "r")
+
+        self.assertTrue(index.structure.to_dict()["tree_truncated"])
 
 
 if __name__ == "__main__":

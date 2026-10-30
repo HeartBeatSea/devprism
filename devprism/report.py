@@ -196,6 +196,16 @@ def render(
             add(f"- 同时包含 Kotlin 文件 **{java['kotlin_files']}** 个")
         add(f"- CI 配置：**{java.get('ci_files', 0)}** 个文件；"
             f"构建包装器：{'有' if java.get('has_wrapper') else '无'}")
+        areas = java.get("areas") or {}
+        if areas:
+            total_bytes = sum(a.get("bytes", 0) for a in areas.values()) or 1
+            parts = [
+                f"{name} {data.get('files', 0)} 个文件（{data.get('bytes', 0) / total_bytes:.0%}）"
+                for name, data in list(areas.items())[:5]
+            ]
+            add(f"- 区域构成：{'、'.join(parts)}")
+        if java.get("tree_truncated"):
+            add("- ⚠ 目录树被 GitHub 截断，以上文件计数是下限而非精确值")
         if java.get("failed_files"):
             add(f"- ⚠ 以下关键文件未能读取，依赖与版本信息可能缺失："
                 f"{'、'.join(java['failed_files'][:6])}")
