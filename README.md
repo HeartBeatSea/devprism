@@ -26,6 +26,15 @@ pip install -e ".[web]"
 python -m devprism serve        # 默认 http://127.0.0.1:8800
 ```
 
+**不想配 token、或者网络访问不了 GitHub**，可以直接跑离线演示：
+
+```bash
+python -m devprism serve --demo        # 用仓库自带的快照，一次网络请求都不发
+python -m devprism analyze google/gson --demo
+```
+
+`demo/gson.json` 是一份真实仓库的快照（66 条提交、110 个 PR、435 个目录项、6 份源码），由 `scripts/export_demo.py` 导出。星图、报告、点开节点读源码这些都能跑，只有模型解读需要 LLM key。
+
 配置放 `.env`，复制 `.env.example` 改：
 
 - `GITHUB_TOKEN`：强烈建议配。不配 60 次/小时，配了 5000 次，还能拿到 GraphQL 的评审数据
@@ -114,14 +123,17 @@ devprism/
 ├── llm.py            OpenAI 兼容客户端
 ├── markdown_lite.py  Markdown → HTML，输出强制转义
 ├── web.py            FastAPI + SSE
+├── fixture.py        离线快照客户端（演示用）
 ├── config.py         环境变量 / .env
 └── cli.py            命令行入口
 web/index.html        单文件前端，没有构建步骤
 knowledge/            团队规范样例
 skills/               技能包（每个目录一个 SKILL.md）
 workflows/weekly.yaml 周报工作流
-tests/                182 个用例
+tests/                207 个用例
 docs/                 需求、使用手册、发布说明
+demo/gson.json        离线演示快照
+scripts/              导出演示数据、密钥自检
 ```
 
 ## 边界

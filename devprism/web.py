@@ -103,7 +103,9 @@ def run_analysis(
     trace: list[dict[str, Any]] = []
     embedder: Any = None
     try:
-        client = GitHubClient(settings.github_token, cache, settings.timeout, proxy=settings.proxy)
+        client = _demo_client() if DEMO else GitHubClient(
+                settings.github_token, cache, settings.timeout, proxy=settings.proxy
+            )
 
         seed, label = resolve_knowledge(client, owner, name, conventions)
         if conventions != "team":
@@ -202,8 +204,9 @@ def _read_text(
     """
     try:
         payload = client.get(f"/repos/{owner}/{name}/contents/{path}")
-    except GitHubError as exc:
-        # contents API 不通时换 raw 域名再试一次：两者常常一个被拦一个能通
+    except (GitHubError, RuntimeError) as exc:
+        # contents API 不通时换 raw 域名再试一次：两者常常一个被拦一个能通。
+        # RuntimeError 来自离线快照客户端——它只认 raw_text。
         fallback = client.raw_text(owner, name, path, limit=MAX_SOURCE_BYTES)
         if fallback:
             return fallback, None
@@ -333,10 +336,33 @@ def _explain_with_llm(
         long_cache.close()
 
 
+DEMO = False
+DEMO_FILE = ROOT / "demo" / "gson.json"
+
+
+def _demo_client() -> Any:
+    from .fixture import FixtureClient
+
+    return FixtureClient(DEMO_FILE)
+
+
 def build_report_payload(repo: str, days: int) -> dict[str, Any]:
     """跑一遍确定性指标并渲染成报告，问答流和 /api/report 共用。"""
     from . import report as report_module
     from .cli import run_analysis as analyze
+
+    if DEMO:
+        summary = analyze(owner, name, days, 6, demo=True)
+        source = summary.pop("_source", {})
+        markdown = report_module.render(summary, source)
+        return {
+            "markdown": markdown,
+            "html": render_markdown(markdown),
+            "commits": summary["commits"]["total"],
+            "merged": summary["pulls"]["merged"],
+            "summary": summary,
+            "source": source,
+        }
 
     owner, name = split_repo(repo)
     summary = analyze(owner, name, days, 6)
@@ -374,7 +400,9 @@ def build_app() -> Any:
         settings = load_settings()
         cache = HttpCache(settings.cache_path)
         try:
-            client = GitHubClient(settings.github_token, cache, settings.timeout, proxy=settings.proxy)
+            client = _demo_client() if DEMO else GitHubClient(
+                settings.github_token, cache, settings.timeout, proxy=settings.proxy
+            )
             meta_info = client.repo(owner, name)
             tree = client.tree(owner, name, meta_info.get("default_branch") or "HEAD")
             payload = build_graph(f"{owner}/{name}", tree, focus=focus)
@@ -422,7 +450,9 @@ def build_app() -> Any:
         settings = load_settings()
         cache = HttpCache(settings.cache_path)
         try:
-            client = GitHubClient(settings.github_token, cache, settings.timeout, proxy=settings.proxy)
+            client = _demo_client() if DEMO else GitHubClient(
+                settings.github_token, cache, settings.timeout, proxy=settings.proxy
+            )
             meta_info = client.repo(owner, name)
             tree = client.tree(owner, name, meta_info.get("default_branch") or "HEAD")
             blobs = {
@@ -634,7 +664,9 @@ def build_app() -> Any:
     return app
 
 
-def serve(host: str = "127.0.0.1", port: int = 8800) -> int:
+def serve(host: str = "127.0.0.1", port: int = 8800, demo: bool = False) -> int:
+    global DEMO
+    DEMO = demo
     if not WEB_AVAILABLE:
         print("Web 控制台需要 FastAPI 与 uvicorn，先安装：", file=sys.stderr)
         print('  pip install -e ".[web]"', file=sys.stderr)
@@ -642,6 +674,7 @@ def serve(host: str = "127.0.0.1", port: int = 8800) -> int:
 
     settings = load_settings()
     print(f"效能棱镜 Web 控制台：http://{host}:{port}")
+    print(f"  数据源：{'离线演示快照（不访问 GitHub）' if demo else 'GitHub API'}")
     print(f"  GitHub Token：{'已配置' if settings.github_token else '未配置（60 次/小时）'}")
     print(f"  模型：{settings.llm_model if settings.has_llm else '未配置'}")
     print("按 Ctrl+C 停止\n")

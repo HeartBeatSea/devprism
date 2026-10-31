@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--out", type=Path, help="报告输出路径，默认 report-<repo>.md")
     analyze.add_argument("--json", type=Path, help="同时导出原始指标 JSON")
     analyze.add_argument("--max-pages", type=int, default=6, help="单接口最大翻页数（配额闸门）")
+    analyze.add_argument("--demo", action="store_true", help="使用离线快照演示，不访问 GitHub（repo 参数仅为示例）")
 
     sub.add_parser("doctor", help="检查 GitHub 与模型配置是否可用")
 
@@ -55,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--days", type=int, default=180, help="分析窗口天数")
     ask.add_argument("--max-steps", type=int, default=8, help="最大推理步数")
     ask.add_argument("--max-pages", type=int, default=6, help="单接口最大翻页数，需与 analyze 一致")
+    ask.add_argument("--demo", action="store_true", help="使用离线快照演示，不访问 GitHub（repo 参数仅为示例）")
     ask.add_argument(
         "--conventions",
         choices=["team", "repo"],
@@ -68,19 +70,38 @@ def build_parser() -> argparse.ArgumentParser:
                      help="输入变量，可重复，例如 --var owner=pallets")
     run.add_argument("--days", type=int, default=180, help="分析窗口天数")
     run.add_argument("--max-pages", type=int, default=6, help="单接口最大翻页数")
+    run.add_argument("--demo", action="store_true", help="使用离线快照演示，不访问 GitHub（repo 参数仅为示例）")
     run.add_argument("--resume", metavar="RUN_ID", help="从暂停的运行处继续")
     run.add_argument("--approve", action="store_true", help="继续时放行人工确认节点")
 
     serve = sub.add_parser("serve", help="启动 Web 控制台，浏览器里看推理轨迹")
     serve.add_argument("--host", default="127.0.0.1", help="监听地址，默认仅本机")
     serve.add_argument("--port", type=int, default=8800, help="端口，默认 8800")
+    serve.add_argument("--demo", action="store_true", help="使用离线快照演示，不访问 GitHub（repo 参数仅为示例）")
     return parser
 
 
-def run_analysis(owner: str, name: str, days: int, max_pages: int) -> dict:
-    settings = load_settings()
+DEMO_FILE = ROOT / "demo" / "gson.json"
+
+
+def _make_client(settings, demo: bool = False):
+    """返回 (client, cache)。演示模式用本地快照，没有缓存要关。"""
+    if demo:
+        from .fixture import FixtureClient
+
+        return FixtureClient(DEMO_FILE), None
     cache = HttpCache(settings.cache_path)
-    client = GitHubClient(settings.github_token, cache, settings.timeout, proxy=settings.proxy)
+    return (
+        GitHubClient(settings.github_token, cache, settings.timeout, proxy=settings.proxy),
+        cache,
+    )
+
+
+def run_analysis(
+    owner: str, name: str, days: int, max_pages: int, demo: bool = False
+) -> dict:
+    settings = load_settings()
+    client, cache = _make_client(settings, demo)
 
     try:
         now = datetime.now(timezone.utc)
@@ -92,7 +113,7 @@ def run_analysis(owner: str, name: str, days: int, max_pages: int) -> dict:
         repo_meta = client.repo(owner, name)
         commits = client.commits(owner, name, since_iso, max_pages=max_pages)
         # 有 Token 时走 GraphQL：响应体小，且自带评审次数，不必逐 PR 再请求
-        if settings.github_token:
+        if settings.github_token or demo:
             pulls = client.pulls_via_graphql(
                 owner, name, max_pages=max_pages, since=since_iso
             )
@@ -128,13 +149,14 @@ def run_analysis(owner: str, name: str, days: int, max_pages: int) -> dict:
         }
         return summary
     finally:
-        cache.close()
+        if cache is not None:
+            cache.close()
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
     owner, name = args.repo
     try:
-        summary = run_analysis(owner, name, args.days, args.max_pages)
+        summary = run_analysis(owner, name, args.days, args.max_pages, demo=args.demo)
     except RateLimitError as exc:
         print(f"配额不足：{exc}", file=sys.stderr)
         return 2
@@ -164,8 +186,7 @@ def cmd_ask(args: argparse.Namespace) -> int:
         return 2
 
     owner, name = args.repo
-    cache = HttpCache(settings.cache_path)
-    client = GitHubClient(settings.github_token, cache, settings.timeout, proxy=settings.proxy)
+    client, cache = _make_client(settings, getattr(args, "demo", False))
 
     knowledge_seed = None
     if args.conventions == "repo":
@@ -218,7 +239,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
         print(f"模型调用失败：{exc}", file=sys.stderr)
         return 1
     finally:
-        cache.close()
+        if cache is not None:
+            cache.close()
 
     print("\n" + "─" * 60)
     print(result.answer)
@@ -373,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run":
         return cmd_run(args)
     if args.command == "serve":
-        return serve_web(args.host, args.port)
+        return serve_web(args.host, args.port, demo=getattr(args, "demo", False))
     if args.command == "doctor":
         return cmd_doctor(args)
     parser.print_help()
