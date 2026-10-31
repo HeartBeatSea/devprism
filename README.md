@@ -66,6 +66,30 @@ Java 仓库会多一节工程结构。拿 `google/gson` 举例：Maven、Java 11
 
 必须这么拆的原因很直接：一个中等 Java 仓库两百多个文件，逐个读就是两百多次请求，配额当场就没了。结构和语义分开——前者白拿，后者按需——才跑得起来。
 
+## 技能包
+
+检索解决的是「模型不知道的事实」，技能解决的是「模型不知道该怎么做」。所以规范原文走知识库，体检流程走技能包。
+
+`skills/` 下面一个目录一个技能，`SKILL.md` 开头是 frontmatter：
+
+```markdown
+---
+name: commit-audit
+title: 提交规范体检
+description: 检查提交规范执行情况并给出整改建议
+when: 用户问提交规范、commit message、规范率
+tools: commit_convention, search_knowledge
+---
+
+## 步骤
+1. 调 commit_convention 拿规范率
+2. 低于 50% 时查团队规范原文，并引用出处
+```
+
+模型先调 `list_skills` 看到目录（只有名字和适用场景），判断对得上才 `load_skill` 加载正文。渐进式披露——技能攒到几十个也不会一次性把上下文撑爆。
+
+现在内置四个：提交规范体检、Java 工程结构评审、PR 协作体检、周报生成。技能里写死了口径，比如「测试比例是类数量比、不是行覆盖率」「评审数据为 null 时判不可用」，模型照着执行就不会跑偏。
+
 ## 目录
 
 ```
@@ -82,6 +106,7 @@ devprism/
 ├── embeddings.py     可插拔向量后端 + 混合打分
 ├── report.py         报告渲染
 ├── agent.py          ReAct 循环 + 死循环护栏 + 引用校验
+├── skills.py         技能包加载（渐进式披露）
 ├── tools.py          8 个工具 + JSON Schema 校验
 ├── workflow.py       YAML 工作流：DAG、人工确认、断点续跑
 ├── yamlite.py        极简 YAML 子集解析器
@@ -93,6 +118,7 @@ devprism/
 └── cli.py            命令行入口
 web/index.html        单文件前端，没有构建步骤
 knowledge/            团队规范样例
+skills/               技能包（每个目录一个 SKILL.md）
 workflows/weekly.yaml 周报工作流
 tests/                182 个用例
 docs/                 需求、使用手册、发布说明

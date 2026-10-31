@@ -22,6 +22,7 @@ from . import metrics
 from .config import ROOT
 from .github import GitHubClient
 from .knowledge import KnowledgeBase
+from .skills import Skill, find_skill, load_skills
 
 _WINDOW_NOTE = "分析窗口由会话决定，工具本身不接受时间参数。"
 
@@ -45,12 +46,20 @@ class ToolContext:
     knowledge_root: Path | None = None
     knowledge_seed: KnowledgeBase | None = None
     embedder: Any = None
+    skills_root: Path | None = None
 
     _repo: dict[str, Any] = field(default_factory=dict)
     _commits: dict[str, list] = field(default_factory=dict)
     _pulls: dict[str, list] = field(default_factory=dict)
     _index: dict[str, Any] = field(default_factory=dict)
     _knowledge: KnowledgeBase | None = field(default=None, repr=False)
+    _skills: list[Skill] | None = field(default=None, repr=False)
+
+    @property
+    def skills(self) -> list[Skill]:
+        if self._skills is None:
+            self._skills = load_skills(self.skills_root or (ROOT / "skills"))
+        return self._skills
 
     @property
     def knowledge(self) -> KnowledgeBase:
@@ -185,6 +194,25 @@ def repo_structure(ctx: ToolContext, owner: str, name: str) -> dict[str, Any]:
     }
 
 
+def list_skills(ctx: ToolContext) -> dict[str, Any]:
+    """列出可用技能。只给名字和适用场景，正文要 load_skill 才拿。"""
+    skills = ctx.skills
+    return {
+        "skills": [skill.brief() for skill in skills],
+        "note": "先看有没有匹配的；有就 load_skill 加载步骤，再照着执行。" if skills
+                else "没有可用技能，按常规分析流程处理。",
+    }
+
+
+def load_skill(ctx: ToolContext, name: str) -> dict[str, Any]:
+    """加载一个技能的完整步骤。"""
+    skill = find_skill(ctx.skills, name)
+    if skill is None:
+        names = "、".join(item.name for item in ctx.skills) or "（无）"
+        return {"error": f"没有名为 {name} 的技能。可用技能：{names}"}
+    return skill.full()
+
+
 def search_repo(
     ctx: ToolContext, owner: str, name: str, query: str, top_k: int = 3
 ) -> dict[str, Any]:
@@ -254,6 +282,9 @@ class ToolRegistry:
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
+
+    def names(self) -> list[str]:
+        return list(self._tools)
 
     def specs(self) -> list[dict[str, Any]]:
         return [
@@ -354,5 +385,26 @@ def build_registry(ctx: ToolContext) -> ToolRegistry:
                     "这类问题应查这里，而不是查团队规范。",
         parameters=_REPO_SEARCH_PARAMS,
         handler=search_repo,
+    ))
+    registry.register(Tool(
+        name="list_skills",
+        description="列出可用的分析技能（提交规范体检、Java 工程结构评审、PR 协作体检、周报生成）。"
+                    "只返回名字和适用场景。接到的任务如果和某个技能对得上，"
+                    "应先 load_skill 拿到步骤再动手，不要自己临场发挥。",
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=lambda ctx: list_skills(ctx),
+    ))
+    registry.register(Tool(
+        name="load_skill",
+        description="加载一个技能的完整步骤与注意事项。按步骤执行，"
+                    "技能里提到的工具就用对应工具取数。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "技能名，从 list_skills 里选"},
+            },
+            "required": ["name"],
+        },
+        handler=load_skill,
     ))
     return registry
