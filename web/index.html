@@ -825,6 +825,9 @@ function askAgent(question) {
       case "observation":
         traceLine(box, ev.ok ? "obs" : "err", ev.ok ? "返回" : "失败", (ev.content || "").slice(0, 300));
         break;
+      case "guard":
+        traceLine(box, "err", "护栏", `${ev.stage} · ${ev.reason}`);
+        break;
       case "citation_warning":
         traceLine(box, "err", "引用", "未在知识库中找到：" + (ev.invalid || []).join("、"));
         break;

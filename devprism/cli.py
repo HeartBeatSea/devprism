@@ -233,7 +233,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
     print(f"→ 分析 {owner}/{name}，窗口 {args.days} 天", file=sys.stderr)
     try:
         result = agent.run(
-            prompt, registry, llm, max_steps=args.max_steps, on_event=on_event
+            prompt, registry, llm, max_steps=args.max_steps, on_event=on_event,
+            user_input=args.question,
         )
     except LLMError as exc:
         print(f"模型调用失败：{exc}", file=sys.stderr)

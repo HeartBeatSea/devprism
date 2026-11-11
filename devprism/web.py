@@ -131,7 +131,7 @@ def run_analysis(
             trace.append(event)
             emit(event)
 
-        result = agent.run(prompt, registry, llm, on_event=agent_event)
+        result = agent.run(prompt, registry, llm, on_event=agent_event, user_input=question)
         emit({
             "type": "answer",
             "markdown": result.answer,
