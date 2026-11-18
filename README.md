@@ -1,5 +1,7 @@
 # 效能棱镜 DevPrism
 
+[![CI](https://github.com/HeartBeatSea/devprism/actions/workflows/ci.yml/badge.svg)](https://github.com/HeartBeatSea/devprism/actions/workflows/ci.yml)
+
 给它一个 GitHub 仓库地址，它的功能：出一份研发效能报告，或者把这个仓库画成一张可以点开的星图。
 
 ## 两个模式
@@ -109,6 +111,19 @@ python scripts/evaluate.py --agent --demo
 准确率满分只说明「该调的调到了」，精确率 56% 说明它还会顺手多查一两个工具。这里面有一部分是设计使然——提示词要求开场先 `list_skills`、先 `repo_overview` 确认规模，这类定向调用没算进精确率；剩下的是真的多查了。想让它更省，得在提示词里收紧"够用就停"，但那会拿召回换精确，不一定划算。
 
 用例在 [`eval/cases.json`](eval/cases.json)，断言的是**真实存在的引用路径**，写错会直接报错，避免用例本身是假的。
+
+检索那一项进了 CI，**recall 掉到 85% 以下就直接红**。改检索代码时不用靠自觉，数字会说话。
+
+## 持续集成
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) 跑两件事：
+
+- **测试**（Python 3.10 和 3.12）：单元测试、检索评测、离线演示冒烟、密钥自检
+- **Web**：装 `[web]` 依赖，构建 FastAPI 应用，确认首页能渲染
+
+离线演示那步是刻意加的——它不访问 GitHub，跑不通说明快照或渲染链路坏了，跟网络无关。
+
+顺带记一个自己踩过的坑：演示快照的窗口原本按「今天」往前推，导出时 66 条提交，过一周再看变成 65 条，再放几个月会变成 0。现在 `FixtureClient.now()` 把时间钉在导出那一刻，数字永久稳定。
 
 ## 技能包
 

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,23 @@ class FixtureClient:
         self.tree_truncated = bool(data.get("tree_truncated"))
 
     # ---------- 与 GitHubClient 对齐 ----------
+
+    def now(self) -> datetime:
+        """快照的时间基准＝导出时刻。
+
+        分析窗口是按「现在」往前推 N 天算的。如果演示也用真实时间，
+        快照放几天之后窗口就滑走了，提交数会越来越少，最后变成 0。
+        把时间钉在导出那一刻，演示的数字才是稳定、可复现的。
+        """
+        exported = (self.source or {}).get("exported_at")
+        if exported:
+            try:
+                return datetime.strptime(exported, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=timezone.utc
+                )
+            except ValueError:
+                pass
+        return datetime.now(timezone.utc)
 
     def repo(self, owner: str, name: str) -> dict[str, Any]:
         return self._repo

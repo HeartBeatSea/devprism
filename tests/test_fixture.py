@@ -103,6 +103,19 @@ class TestFixtureClient(unittest.TestCase):
         with self.assertRaises(ValueError):
             self._client(raw=json.dumps({"version": 999}))
 
+    def test_now_is_pinned_to_export_time(self):
+        """窗口按「现在」往前推，演示若用真实时间，数字会随日期漂走。"""
+        payload = make_fixture(source={"repo": "o/r", "exported_at": "2026-10-31T00:00:00Z"})
+
+        client = self._client(payload)
+
+        self.assertEqual(client.now().isoformat(), "2026-10-31T00:00:00+00:00")
+
+    def test_now_falls_back_when_missing(self):
+        client = self._client(make_fixture(source={"repo": "o/r"}))
+
+        self.assertIsNotNone(client.now())
+
 
 class TestBundledFixture(unittest.TestCase):
     """仓库自带的演示快照必须能直接跑通分析链路。"""
@@ -128,6 +141,21 @@ class TestBundledFixture(unittest.TestCase):
         graph = build_graph("google/gson", client.tree("google", "gson"))
         self.assertGreater(len(graph["nodes"]), 5, "演示快照应能画出星图")
         self.assertTrue(client.file_text("google", "gson", "pom.xml"))
+
+    def test_demo_window_is_stable(self):
+        """同一个快照反复跑，窗口和提交数必须一致，否则 CI 会随日期变红。"""
+        from datetime import timedelta
+
+        from devprism.config import ROOT
+
+        client = FixtureClient(ROOT / "demo" / "gson.json")
+        since_iso = (client.now() - timedelta(days=180)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        first = client.commits("google", "gson", since_iso)
+        second = client.commits("google", "gson", since_iso)
+
+        self.assertEqual(len(first), len(second))
+        self.assertGreater(len(first), 0, "演示快照里应该有窗口内的提交")
 
 
 if __name__ == "__main__":

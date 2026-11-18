@@ -33,11 +33,14 @@ def run_retrieval(args) -> int:
     kb = KnowledgeBase(ROOT / "knowledge")
     result = evaluation.evaluate_retrieval(kb, cases, k=args.k)
 
-    print(evaluation.format_retrieval(result))
-    print(f"\n语料：{kb.stats()}")
     if args.json:
         Path(args.json).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"结果已写入 {args.json}")
+    print(evaluation.format_retrieval(result))
+    print(f"\n语料：{kb.stats()}")
+    if args.min_recall is not None and result["recall"] < args.min_recall:
+        print(f"\n召回率 {result['recall']:.1%} 低于阈值 {args.min_recall:.0%}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -94,6 +97,8 @@ def main() -> int:
     parser.add_argument("--limit", type=int, help="只跑前 N 条用例（省 token）")
     parser.add_argument("--real", action="store_true", help="工具评测用真实 GitHub 数据")
     parser.add_argument("--json", help="把结果写成 JSON")
+    parser.add_argument("--min-recall", type=float,
+                        help="召回率低于该值时返回非零退出码，CI 用，例如 0.85")
     args = parser.parse_args()
 
     if not args.retrieval and not args.agent:
@@ -101,7 +106,9 @@ def main() -> int:
         return 1
 
     if args.retrieval:
-        run_retrieval(args)
+        status = run_retrieval(args)
+        if status:
+            return status
     if args.agent:
         return run_agent(args)
     return 0

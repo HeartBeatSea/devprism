@@ -104,7 +104,9 @@ def run_analysis(
     client, cache = _make_client(settings, demo)
 
     try:
-        now = datetime.now(timezone.utc)
+        # 演示快照自带时间基准，用它算窗口，保证数字不随真实日期漂移
+        clock = getattr(client, "now", None)
+        now = clock() if callable(clock) else datetime.now(timezone.utc)
         # 对齐到 UTC 零点：否则 since 带秒级时间戳，每次运行 URL 都不同，缓存永远不命中
         since = (now - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
         since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
