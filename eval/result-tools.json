@@ -1,0 +1,346 @@
+{
+  "kind": "tools",
+  "total": 17,
+  "correct": 17,
+  "accuracy": 1.0,
+  "tool_precision": 0.474,
+  "tool_recall": 1.0,
+  "cases": [
+    {
+      "id": "conv-01",
+      "question": "提交信息的摘要行最长多少字符？",
+      "ok": true,
+      "called": [
+        "commit_convention",
+        "list_skills",
+        "load_skill",
+        "search_knowledge"
+      ],
+      "expected": [
+        "search_knowledge"
+      ],
+      "missing": [],
+      "extra": [
+        "commit_convention",
+        "list_skills",
+        "load_skill"
+      ]
+    },
+    {
+      "id": "conv-02",
+      "question": "提交信息用什么格式写？",
+      "ok": true,
+      "called": [
+        "commit_convention",
+        "list_skills",
+        "load_skill",
+        "search_knowledge"
+      ],
+      "expected": [
+        "search_knowledge"
+      ],
+      "missing": [],
+      "extra": [
+        "commit_convention",
+        "list_skills",
+        "load_skill"
+      ]
+    },
+    {
+      "id": "conv-03",
+      "question": "允许使用哪些提交类型？",
+      "ok": true,
+      "called": [
+        "commit_convention",
+        "list_skills",
+        "load_skill",
+        "repo_overview",
+        "search_knowledge"
+      ],
+      "expected": [
+        "search_knowledge"
+      ],
+      "missing": [],
+      "extra": [
+        "commit_convention",
+        "list_skills",
+        "load_skill",
+        "repo_overview"
+      ]
+    },
+    {
+      "id": "conv-05",
+      "question": "哪些提交写法算不合规？",
+      "ok": true,
+      "called": [
+        "commit_convention",
+        "list_skills",
+        "load_skill",
+        "search_knowledge"
+      ],
+      "expected": [
+        "search_knowledge"
+      ],
+      "missing": [],
+      "extra": [
+        "commit_convention",
+        "list_skills",
+        "load_skill"
+      ]
+    },
+    {
+      "id": "conv-06",
+      "question": "规范提交占比是怎么算的？",
+      "ok": true,
+      "called": [
+        "commit_convention",
+        "list_skills",
+        "load_skill",
+        "search_knowledge"
+      ],
+      "expected": [
+        "commit_convention",
+        "search_knowledge"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills",
+        "load_skill"
+      ]
+    },
+    {
+      "id": "review-01",
+      "question": "PR 提交后多久要给出第一次反馈？",
+      "ok": true,
+      "called": [
+        "list_skills",
+        "search_knowledge"
+      ],
+      "expected": [
+        "search_knowledge"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills"
+      ]
+    },
+    {
+      "id": "review-03",
+      "question": "代码评审必须检查哪些内容？",
+      "ok": true,
+      "called": [
+        "list_skills",
+        "load_skill",
+        "pull_health",
+        "search_knowledge"
+      ],
+      "expected": [
+        "search_knowledge"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills",
+        "load_skill",
+        "pull_health"
+      ]
+    },
+    {
+      "id": "review-06",
+      "question": "合并 PR 需要满足哪些条件？",
+      "ok": true,
+      "called": [
+        "list_skills",
+        "load_skill",
+        "pull_health",
+        "repo_overview",
+        "search_knowledge",
+        "search_repo"
+      ],
+      "expected": [
+        "search_knowledge"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills",
+        "load_skill",
+        "pull_health",
+        "repo_overview",
+        "search_repo"
+      ]
+    },
+    {
+      "id": "branch-01",
+      "question": "团队用什么分支模型？",
+      "ok": true,
+      "called": [
+        "list_skills",
+        "search_knowledge"
+      ],
+      "expected": [
+        "search_knowledge"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills"
+      ]
+    },
+    {
+      "id": "branch-06",
+      "question": "发布前必须完成哪些事情？",
+      "ok": true,
+      "called": [
+        "list_skills",
+        "repo_overview",
+        "search_knowledge",
+        "search_repo"
+      ],
+      "expected": [
+        "search_knowledge"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills",
+        "repo_overview",
+        "search_repo"
+      ]
+    },
+    {
+      "id": "branch-09",
+      "question": "main 分支有哪些保护？",
+      "ok": true,
+      "called": [
+        "list_skills",
+        "repo_overview",
+        "search_knowledge",
+        "search_repo"
+      ],
+      "expected": [
+        "search_knowledge"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills",
+        "repo_overview",
+        "search_repo"
+      ]
+    },
+    {
+      "id": "repo-01",
+      "question": "这个仓库最近的提交节奏怎么样？",
+      "ok": true,
+      "called": [
+        "commit_activity",
+        "list_skills"
+      ],
+      "expected": [
+        "commit_activity"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills"
+      ]
+    },
+    {
+      "id": "repo-02",
+      "question": "这个仓库的 PR 合并周期有多长？",
+      "ok": true,
+      "called": [
+        "list_skills",
+        "load_skill",
+        "pull_health"
+      ],
+      "expected": [
+        "pull_health"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills",
+        "load_skill"
+      ]
+    },
+    {
+      "id": "repo-03",
+      "question": "这个项目的提交规范执行得怎么样？",
+      "ok": true,
+      "called": [
+        "commit_convention",
+        "list_skills",
+        "load_skill",
+        "search_knowledge"
+      ],
+      "expected": [
+        "commit_convention"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills",
+        "load_skill",
+        "search_knowledge"
+      ]
+    },
+    {
+      "id": "repo-04",
+      "question": "这个 Java 项目的测试比例健康吗？",
+      "ok": true,
+      "called": [
+        "list_skills",
+        "load_skill",
+        "repo_structure",
+        "search_knowledge",
+        "search_repo"
+      ],
+      "expected": [
+        "repo_structure"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills",
+        "load_skill",
+        "search_knowledge",
+        "search_repo"
+      ]
+    },
+    {
+      "id": "repo-05",
+      "question": "贡献者结构有没有关键人依赖风险？",
+      "ok": true,
+      "called": [
+        "commit_activity",
+        "contributor_structure",
+        "list_skills",
+        "repo_overview"
+      ],
+      "expected": [
+        "contributor_structure"
+      ],
+      "missing": [],
+      "extra": [
+        "commit_activity",
+        "list_skills",
+        "repo_overview"
+      ]
+    },
+    {
+      "id": "repo-06",
+      "question": "这个项目怎么构建？用 Maven 还是 Gradle？",
+      "ok": true,
+      "called": [
+        "list_skills",
+        "load_skill",
+        "repo_overview",
+        "repo_structure",
+        "search_repo"
+      ],
+      "expected": [
+        "search_repo"
+      ],
+      "missing": [],
+      "extra": [
+        "list_skills",
+        "load_skill",
+        "repo_overview",
+        "repo_structure"
+      ]
+    }
+  ]
+}

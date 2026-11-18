@@ -1,0 +1,216 @@
+{
+  "version": 1,
+  "description": "评测用例。expect_sources 用于检索评测（命中任一即算召回）；expect_tools 用于工具选择评测（必须全部调用到）。只有 expect_sources 的用例只参与检索评测，只有 expect_tools 的只参与工具评测。",
+  "cases": [
+    {
+      "id": "conv-01",
+      "question": "提交信息的摘要行最长多少字符？",
+      "expect_sources": ["git-convention.md#Git 提交信息规范"],
+      "expect_tools": ["search_knowledge"],
+      "tags": ["提交规范"]
+    },
+    {
+      "id": "conv-02",
+      "question": "提交信息用什么格式写？",
+      "expect_sources": ["git-convention.md#Git 提交信息规范 / 格式 · 1", "git-convention.md#Git 提交信息规范 / 格式 · 2"],
+      "expect_tools": ["search_knowledge"],
+      "tags": ["提交规范"]
+    },
+    {
+      "id": "conv-03",
+      "question": "允许使用哪些提交类型？",
+      "expect_sources": ["git-convention.md#Git 提交信息规范 / 类型取值"],
+      "expect_tools": ["search_knowledge"],
+      "tags": ["提交规范"]
+    },
+    {
+      "id": "conv-04",
+      "question": "可以自己新增提交类型吗？",
+      "expect_sources": ["git-convention.md#Git 提交信息规范 / 类型取值"],
+      "tags": ["提交规范"]
+    },
+    {
+      "id": "conv-05",
+      "question": "哪些提交写法算不合规？",
+      "expect_sources": ["git-convention.md#Git 提交信息规范 / 常见违规写法"],
+      "expect_tools": ["search_knowledge"],
+      "tags": ["提交规范"]
+    },
+    {
+      "id": "conv-06",
+      "question": "规范提交占比是怎么算的？",
+      "expect_sources": ["git-convention.md#Git 提交信息规范 / 与效能指标的关系"],
+      "expect_tools": ["search_knowledge", "commit_convention"],
+      "tags": ["提交规范", "指标口径"]
+    },
+    {
+      "id": "conv-07",
+      "question": "规范率太低会带来什么后果？",
+      "expect_sources": ["git-convention.md#Git 提交信息规范 / 与效能指标的关系"],
+      "tags": ["提交规范"]
+    },
+    {
+      "id": "conv-08",
+      "question": "写「update」这种提交信息行不行？",
+      "expect_sources": ["git-convention.md#Git 提交信息规范 / 常见违规写法"],
+      "tags": ["提交规范"]
+    },
+    {
+      "id": "conv-09",
+      "question": "提交信息有什么硬性要求？",
+      "expect_sources": [
+        "git-convention.md#Git 提交信息规范",
+        "git-convention.md#Git 提交信息规范 / 格式 · 1",
+        "git-convention.md#Git 提交信息规范 / 类型取值"
+      ],
+      "tags": ["提交规范", "同义改写"]
+    },
+    {
+      "id": "review-01",
+      "question": "PR 提交后多久要给出第一次反馈？",
+      "expect_sources": ["review-checklist.md#Code Review 检查清单 / 评审时机"],
+      "expect_tools": ["search_knowledge"],
+      "tags": ["评审"]
+    },
+    {
+      "id": "review-02",
+      "question": "多久没响应算评审阻塞？",
+      "expect_sources": ["review-checklist.md#Code Review 检查清单 / 评审时机"],
+      "tags": ["评审", "同义改写"]
+    },
+    {
+      "id": "review-03",
+      "question": "代码评审必须检查哪些内容？",
+      "expect_sources": ["review-checklist.md#Code Review 检查清单 / 必查项"],
+      "expect_tools": ["search_knowledge"],
+      "tags": ["评审"]
+    },
+    {
+      "id": "review-04",
+      "question": "评审意见里的 must 和 nit 有什么区别？",
+      "expect_sources": ["review-checklist.md#Code Review 检查清单 / 评审意见的写法 · 1"],
+      "tags": ["评审"]
+    },
+    {
+      "id": "review-05",
+      "question": "什么样的评审意见算写得差？",
+      "expect_sources": ["review-checklist.md#Code Review 检查清单 / 评审意见的写法 · 2"],
+      "tags": ["评审"]
+    },
+    {
+      "id": "review-06",
+      "question": "合并 PR 需要满足哪些条件？",
+      "expect_sources": ["review-checklist.md#Code Review 检查清单 / 合并条件"],
+      "expect_tools": ["search_knowledge"],
+      "tags": ["评审"]
+    },
+    {
+      "id": "review-07",
+      "question": "无评审直接合并的比例超过多少算形同虚设？",
+      "expect_sources": ["review-checklist.md#Code Review 检查清单 / 无评审合并的风险"],
+      "tags": ["评审", "指标口径"]
+    },
+    {
+      "id": "review-08",
+      "question": "怎么防止有人绕过审核直接提交？",
+      "expect_sources": [
+        "branch-strategy.md#分支与发布策略 / 分支保护",
+        "review-checklist.md#Code Review 检查清单 / 合并条件"
+      ],
+      "tags": ["评审", "同义改写"]
+    },
+    {
+      "id": "branch-01",
+      "question": "团队用什么分支模型？",
+      "expect_sources": ["branch-strategy.md#分支与发布策略 / 主干开发 · 1"],
+      "expect_tools": ["search_knowledge"],
+      "tags": ["分支"]
+    },
+    {
+      "id": "branch-02",
+      "question": "功能分支可以开多久？",
+      "expect_sources": ["branch-strategy.md#分支与发布策略 / 主干开发 · 2"],
+      "tags": ["分支"]
+    },
+    {
+      "id": "branch-03",
+      "question": "分支应该怎么命名？",
+      "expect_sources": ["branch-strategy.md#分支与发布策略 / 分支命名 · 1"],
+      "tags": ["分支"]
+    },
+    {
+      "id": "branch-04",
+      "question": "可以建一个 dev 分支吗？",
+      "expect_sources": ["branch-strategy.md#分支与发布策略 / 分支命名 · 2"],
+      "tags": ["分支"]
+    },
+    {
+      "id": "branch-05",
+      "question": "多久发一次版？",
+      "expect_sources": ["branch-strategy.md#分支与发布策略 / 发布节奏 · 1"],
+      "tags": ["分支"]
+    },
+    {
+      "id": "branch-06",
+      "question": "发布前必须完成哪些事情？",
+      "expect_sources": ["branch-strategy.md#分支与发布策略 / 发布节奏 · 2"],
+      "expect_tools": ["search_knowledge"],
+      "tags": ["分支"]
+    },
+    {
+      "id": "branch-07",
+      "question": "线上出问题走什么分支？",
+      "expect_sources": ["branch-strategy.md#分支与发布策略 / 热修复 · 1"],
+      "tags": ["分支"]
+    },
+    {
+      "id": "branch-08",
+      "question": "热修复之后多久要补测试？",
+      "expect_sources": ["branch-strategy.md#分支与发布策略 / 热修复 · 2"],
+      "tags": ["分支"]
+    },
+    {
+      "id": "branch-09",
+      "question": "main 分支有哪些保护？",
+      "expect_sources": ["branch-strategy.md#分支与发布策略 / 分支保护"],
+      "expect_tools": ["search_knowledge"],
+      "tags": ["分支"]
+    },
+    {
+      "id": "repo-01",
+      "question": "这个仓库最近的提交节奏怎么样？",
+      "expect_tools": ["commit_activity"],
+      "tags": ["仓库数据"]
+    },
+    {
+      "id": "repo-02",
+      "question": "这个仓库的 PR 合并周期有多长？",
+      "expect_tools": ["pull_health"],
+      "tags": ["仓库数据"]
+    },
+    {
+      "id": "repo-03",
+      "question": "这个项目的提交规范执行得怎么样？",
+      "expect_tools": ["commit_convention"],
+      "tags": ["仓库数据"]
+    },
+    {
+      "id": "repo-04",
+      "question": "这个 Java 项目的测试比例健康吗？",
+      "expect_tools": ["repo_structure"],
+      "tags": ["仓库数据"]
+    },
+    {
+      "id": "repo-05",
+      "question": "贡献者结构有没有关键人依赖风险？",
+      "expect_tools": ["contributor_structure"],
+      "tags": ["仓库数据"]
+    },
+    {
+      "id": "repo-06",
+      "question": "这个项目怎么构建？用 Maven 还是 Gradle？",
+      "expect_tools": ["search_repo"],
+      "tags": ["仓库数据"]
+    }
+  ]
+}
